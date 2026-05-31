@@ -3,3 +3,5 @@ models
 .venv
 __pycache__
 IDEA_BRANDING.md
+.registry_embeddings.db
+run_logs
