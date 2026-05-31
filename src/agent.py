@@ -16,7 +16,7 @@ from src.events import Event, EventBus, EventType, emit
 
 class Agent(LlamaRuntime):
     def __init__(self, source: ModelSource, options: RuntimeOptions | None = None):
-        super().__init__(source, options)
+        super().__init__(source, options or RuntimeOptions.auto())
         self.registry = ToolRegistry()
         default_tools(self.registry)
 
@@ -43,13 +43,12 @@ class Agent(LlamaRuntime):
             for x in [
                 state.intent,
                 " ".join(state.goals),
-                " ".join(state.context_items),
                 " ".join(state.open_questions),
             ]
             if x
         )
 
-        relevant = self.registry.build_tool_context(query, top_k=6)
+        relevant, tools, other = self.registry.build_tool_context(query, top_k=6)
 
         artifact_lines = ["artifacts:"]
         for art in self.registry.list_artifacts()[-5:]:
@@ -57,7 +56,18 @@ class Agent(LlamaRuntime):
                 f"- {art.type}: {art.name} | {art.description} | {art.path or 'inline'}"
             )
 
-        return "\n".join([base, "", relevant, "", "\n".join(artifact_lines)])
+        artifacts = []
+        if not len(artifact_lines) > 1: # guard from empty only 'artifacts:' in list
+            artifact_lines = []
+        else:
+            artifacts = artifact_lines[1:]
+
+        artifacts.extend(other)
+
+        combined = "\n".join([base, "", relevant, "", "\n".join(artifact_lines)])
+
+        return combined,  base , tools , artifacts
+        
 
     def act(self, action: dict, state: AgentState) -> ToolResult:
         """Executing the plan (step) made by the LLM."""
@@ -93,6 +103,8 @@ class Agent(LlamaRuntime):
         event_bus = self.event_bus
         emit(event_bus, 0, run_id=run_id, query=query)
 
+        f_p_c = 0
+
         try:
             i_g = self._extract_intent_goals(query)
 
@@ -105,8 +117,9 @@ class Agent(LlamaRuntime):
             while not self._stop_condition(state):
                 emit(event_bus, 2, run_id=run_id, state=state)
 
-                context = self.build_context(state)
-                emit(event_bus, 3, run_id=run_id, state=state, context=context)
+                context, base, tools , artifacts = self.build_context(state)
+
+                emit(event_bus, 3, run_id=run_id, state=state, context=context, base= base,tools=tools,artifacts=artifacts)
 
                 emit(event_bus, 4, run_id=run_id, state=state)
                 t0 = time.time()
@@ -119,8 +132,6 @@ class Agent(LlamaRuntime):
                 t1 = time.time()
 
                 result = self.act(action, state)
-                print("RESULT:")
-                print(result)
 
                 emit(event_bus, 7, run_id=run_id, state=state, result=result, t1=t1)
 
@@ -129,9 +140,18 @@ class Agent(LlamaRuntime):
                 emit(event_bus, 8, run_id=run_id, state=state)
                 t2 = time.time()
 
-                validation = validate(
-                    self, state, action, result, self.registry.list_artifacts()
+                
+
+                if f_p_c > 3:
+                    f = False
+                    f_p_c = 0
+                else:
+                    f = True
+
+                validation, fastPath = validate(
+                    self, state, action, result, self.registry.list_artifacts(),False
                 )
+                if fastPath: f_p_c +=1
 
                 emit(
                     event_bus,
@@ -160,3 +180,6 @@ class Agent(LlamaRuntime):
         except Exception as exc:
             emit(event_bus, 11, run_id=run_id, state=state, exc=exc, query=query)  # type: ignore
             raise
+
+        finally:
+            self.registry.close()

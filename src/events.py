@@ -166,7 +166,11 @@ def emit(event_bus: EventBus, id: int, **kwargs):
             event_bus.emit(
                 Event(
                     EventType.CONTEXT_BUILT,
-                    {"context_len": len(str(kwargs.get("context")))},
+                    {"context_len": len(str(kwargs.get("context"))),
+                        "tools": kwargs.get("tools"),
+                        "base": kwargs.get("base"),
+                        "artifacts": kwargs.get("artifacts")
+                    },
                     run_id=run_id,
                     step=state.step_index,
                 )

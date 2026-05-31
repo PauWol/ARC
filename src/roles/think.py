@@ -87,7 +87,6 @@ def parse_content(content: str) -> dict[str, Any]:
 
 
 def think(runtime: LlamaRuntime, state: AgentState, context: str) -> dict[str, Any]:
-    print(context)
     response = runtime.chat(
         messages=[
             {"role": "system", "content": THINK_PROMPT.strip()},
@@ -99,7 +98,7 @@ def think(runtime: LlamaRuntime, state: AgentState, context: str) -> dict[str, A
         grammar=json_grammar(),
         temperature=0.0,
         top_p=0.1,
-        max_tokens=120,
+        max_tokens=500,
         reset=True,
     )
 

@@ -106,29 +106,31 @@ def validate(
     action: dict[str, Any],
     result: ToolResult,
     artifacts: list[Artifact],
-) -> ValidationResult:
+    fast_path_enabled: bool = True
+) -> [ValidationResult,bool]:
     """
     Validate the latest step without choosing the next tool.
     """
     tool_name = str(action.get("tool", "")).strip()
 
-    if not result.success:
-        summary = (result.summary or "").lower()
+    if fast_path_enabled:
+        if not result.success:
+            summary = (result.summary or "").lower()
 
-        if "unknown tool" in summary:
+            if "unknown tool" in summary:
+                return ValidationResult(
+                    done=False,
+                    status="replan",
+                    reason="unknown tool",
+                    missing=[f"use a registered tool instead of {tool_name}"],
+                ), True
+
             return ValidationResult(
                 done=False,
                 status="replan",
-                reason="unknown tool",
-                missing=[f"use a registered tool instead of {tool_name}"],
-            )
-
-        return ValidationResult(
-            done=False,
-            status="replan",
-            reason="tool failed",
-            missing=["fix tool call", "retry with valid input"],
-        )
+                reason="tool failed",
+                missing=["fix tool call", "retry with valid input"],
+            ), True
 
     prompt = (
         f"{state.compact_prompt()}\n\n"
@@ -152,4 +154,4 @@ def validate(
     )
 
     content = response["choices"][0]["message"]["content"]
-    return parse_validation(content)
+    return parse_validation(content), False

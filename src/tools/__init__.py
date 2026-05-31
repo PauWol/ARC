@@ -1,7 +1,6 @@
 from src.registry import ToolResult, ToolRegistry, Artifact
 from src.sandbox import run_python_file as r_p_f, run_python
 
-
 def default_tools(registry: ToolRegistry):
     """Register the default Tools."""
 

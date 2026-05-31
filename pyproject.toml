@@ -11,5 +11,6 @@ dependencies = [
     "psutil>=7.2.2",
     "questionary>=2.1.1",
     "restrictedpython>=8.1",
+    "sentence-transformers>=5.5.1",
     "textual>=8.2.7",
 ]

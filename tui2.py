@@ -575,10 +575,10 @@ if __name__ == "__main__":
 
     run_tui(
         lambda: Agent(
-            ModelSource(model_path="./models/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf"),
+            ModelSource(model_path="./models/Qwen2.5.1-Coder-7B-Instruct-Q4_K_M.gguf"),
             RuntimeOptions(
                 n_ctx=6000,
-                n_gpu_layers=0,  # raise this for GPU offload
+                n_gpu_layers=-1,  # raise this for GPU offload
                 idle_unload_seconds=120,
                 chat_format=None,  # set if your model needs it
             ),

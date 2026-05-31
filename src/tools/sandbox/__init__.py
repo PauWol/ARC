@@ -8,7 +8,7 @@ def run_python_file(file_path: str):
             text = f.read()
 
     except Exception as e:
-        return ToolResult(False, "running python file code failed", {"error": e})
+        return ToolResult(False, f"error: {e[:200]}", {"error": e})
 
     r = run_python(text)
 
