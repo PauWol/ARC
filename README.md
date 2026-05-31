@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/arc-logo.png" alt="ARC Logo" width="180" />
+<img src="./src/assets/arc-logo.png" alt="ARC Logo" width="180" />
 
 # ARC
 

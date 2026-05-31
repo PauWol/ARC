@@ -9,4 +9,7 @@ dependencies = [
     "llama-cpp-python>=0.3.23",
     "matplotlib>=3.10.9",
     "psutil>=7.2.2",
+    "questionary>=2.1.1",
+    "restrictedpython>=8.1",
+    "textual>=8.2.7",
 ]

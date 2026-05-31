@@ -3,13 +3,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from src.llama_runtime import LlamaRuntime
+from src.assets import json_grammar
 
-from llama_cpp import LlamaGrammar
-from llama_runtime import LlamaRuntime
-
-GRAMMAR_PATH = Path(__file__).with_name("json.gbnf")
-JSON_GRAMMAR = LlamaGrammar.from_string(GRAMMAR_PATH.read_text(encoding="utf-8"))
 
 EXTRACT_PROMPT = """
 Extract the user's task intent and goals.
@@ -28,6 +24,8 @@ Rules:
 - no explanations
 """
 
+INPUT_TOKEN_THRESHOLD = 300
+
 
 @dataclass(slots=True)
 class ExtractedTask:
@@ -45,14 +43,22 @@ class TaskExtractor:
     def __init__(self, runtime: LlamaRuntime):
         self.runtime = runtime
 
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        return len(text) // 4
+
     def extract(self, text: str) -> ExtractedTask:
         """Extract intent and goals from user input."""
+
+        if self.estimate_tokens(text) < INPUT_TOKEN_THRESHOLD:
+            return ExtractedTask(intent=text)
+
         response = self.runtime.chat(
             messages=[
                 {"role": "system", "content": EXTRACT_PROMPT.strip()},
                 {"role": "user", "content": text},
             ],
-            grammar=JSON_GRAMMAR,
+            grammar=json_grammar(),
             temperature=0.0,
             top_p=0.1,
             max_tokens=120,

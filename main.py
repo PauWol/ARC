@@ -1,6 +1,6 @@
 # example.py
-from llama_runtime import ModelSource, RuntimeOptions, LlamaRuntime
-from agent import Agent
+from src.llama_runtime import ModelSource, RuntimeOptions
+from src.agent import Agent
 
 ag = Agent(
     ModelSource(model_path="./models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"),
@@ -13,6 +13,6 @@ ag = Agent(
 )
 
 
-QUERY = "Make me a prime-number python program if you are capable make me a good visualization of the output"
+QUERY = "What is two plus two times 20 minus pi"
 
 ag.run(QUERY)
