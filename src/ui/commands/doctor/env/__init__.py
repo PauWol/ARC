@@ -1,7 +1,6 @@
-# src/ui/commands/doctor/env.py
 from src.ui.types import CheckResult
 from src.util.heal import ensure_dot_env, check_missing_dot_env_entrys, repair_dot_env
-from src.util.constants import CONST, ENV_PATH
+from src.util.constants import ENV_PATH, DEFAULT_DOT_ENV
 
 
 def env_check() -> CheckResult:
@@ -14,13 +13,13 @@ def env_check() -> CheckResult:
             fix_data={
                 "create_file": True,
                 "wrong": [],
-                "missing": list(CONST),
+                "missing": list(DEFAULT_DOT_ENV),
             },
         )
 
     wrong, missing = check_missing_dot_env_entrys()
 
-    issues = None
+    issues = []
 
     if wrong:
         issues = [f"wrong: {line}" for line in wrong]

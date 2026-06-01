@@ -3,6 +3,7 @@ import typer
 from rich.traceback import install
 from src.ui.theme import console, arc_rule, arc_panel, arc_status
 from src.ui.commands.doctor import doctor
+from src.ui.commands.models import app as models_app
 
 install(show_locals=False)
 
@@ -22,6 +23,11 @@ def run():
 
 
 app.command()(doctor)
+
+app.add_typer(
+    models_app,
+    name="models",
+)
 
 if __name__ == "__main__":
     app()

@@ -21,7 +21,12 @@ def print_result(result):
     status = "[green]OK[/green]" if result.ok else "[yellow]ISSUES[/yellow]"
     console.print(f"\n[bold]{result.name}[/bold] — {status}")
 
-    for issue in result.issues:
+    issues = result.issues
+
+    if not issues or len(issues) == 0:
+        return
+
+    for issue in issues:
         console.print(f"  • {issue}")
 
 

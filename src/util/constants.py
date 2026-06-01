@@ -12,10 +12,18 @@ load_dotenv(ENV_PATH)
 
 
 class CONST(Enum):
+    ARC_DIR = "ARC_DIR"
     AGENT_WORKSPACE = "AGENT_WORKSPACE"
+    HUGGINGFACE_TOKEN = "HUGGINGFACE_TOKEN"
+    LLM_MODEL_STORE = "LLM_MODEL_STORE"
 
 
-DEFAULT_DOT_ENV = {CONST.AGENT_WORKSPACE.value: "~/arc/workspace"}
+DEFAULT_DOT_ENV = {
+    CONST.ARC_DIR.value: "~/arc",
+    CONST.AGENT_WORKSPACE.value: "~/arc/workspace",
+    CONST.LLM_MODEL_STORE.value: "~/arc/models",
+    CONST.HUGGINGFACE_TOKEN.value: "YOUR-HUGGINGFACE-TOKEN-OPTIONAL",
+}
 
 
 def env(key: str, missing_error: bool = True) -> Any:
@@ -30,7 +38,7 @@ def env(key: str, missing_error: bool = True) -> Any:
 def workspcae_path(path: str | None = None) -> Path:
     """Return the Agent-Workspace-Path if a path is provided the full resolved is returned."""
 
-    _w_space = Path(env(CONST.AGENT_WORKSPACE.value)).expanduser().as_posix().resolve()
+    _w_space = Path(env(CONST.AGENT_WORKSPACE.value)).expanduser().resolve()
     _w_space.mkdir(parents=True, exist_ok=True)
 
     full = _w_space
