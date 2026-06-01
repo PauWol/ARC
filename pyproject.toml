@@ -5,12 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "dotenv>=0.9.9",
     "huggingface-hub>=1.16.4",
     "llama-cpp-python>=0.3.23",
     "matplotlib>=3.10.9",
+    "prompt-toolkit>=3.0.52",
     "psutil>=7.2.2",
     "questionary>=2.1.1",
     "restrictedpython>=8.1",
+    "rich>=15.0.0",
     "sentence-transformers>=5.5.1",
     "textual>=8.2.7",
+    "typer>=0.25.1",
 ]

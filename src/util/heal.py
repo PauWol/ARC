@@ -13,7 +13,7 @@ def _in_const(line: str) -> str | None:
     return None
 
 
-def check_missing_dot_env_entrys() -> str:
+def check_missing_dot_env_entrys() -> [list[str], list[str] | list[str], None]:
     """
     Check for missing or wrong '.env' entrys.
 
@@ -27,21 +27,23 @@ def check_missing_dot_env_entrys() -> str:
         for l in f:
             l = l.strip()
 
-        key = _in_const(l)
+            key = _in_const(l)
 
-        if not key:  # Wrong entrys
-            _w.append(l)
+            if not key:  # Wrong entrys
+                _w.append(l)
 
-        else:
-            _e.append(key)  # append exsisting
+            else:
+                _e.append(key)  # append exsisting
 
-    if len(CONST) == len(_e):  # fast path
+    _d_env_keys = DEFAULT_DOT_ENV.keys()
+
+    if len(_d_env_keys) == len(_e) and len(_w) == 0:  # fast path
         return _w, None
 
     _m_n = []
 
-    for e in CONST:
-        if e.value not in _e:
+    for e in _d_env_keys:
+        if e not in _e:
             _m_n.append(e)
 
     return _w, _m_n
@@ -52,15 +54,14 @@ def repair_dot_env(missing: list[str], wrong: list[str]):
         ENV_PATH.write_text("")
 
     _lines = ENV_PATH.read_text().splitlines()
+    _l_out = _lines.copy()
 
     for l in _lines:
         if l in wrong:
-            del l
-            wrong.remove(l)
+            _l_out.remove(l)
 
     for m in missing:
-        default_value = DEFAULT_DOT_ENV.get(CONST(m), "")
-        _lines.append(f"{m}={default_value}")
-        _lines.append(f"{m} = {DEFAULT_DOT_ENV.get(m)}")
+        default_value = DEFAULT_DOT_ENV.get(m, "")
+        _l_out.append(f'{m} = "{default_value}"')
 
-    ENV_PATH.write_text("\n".join(_lines) + "\n")
+    ENV_PATH.write_text("\n".join(_l_out) + "\n")
