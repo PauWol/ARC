@@ -1,5 +1,5 @@
-# arc/ui/theme.py
-from rich.console import Console
+from typing import Literal
+from rich.console import Console, RenderableType
 from rich.theme import Theme
 from rich.style import Style
 from rich.panel import Panel
@@ -54,7 +54,9 @@ def arc_rule(title: str = "ARC") -> Rule:
     return Rule(title, style="arc.primary")
 
 
-def arc_panel(renderable, title: str | None = None, border_style: str = "arc.blue"):
+def arc_panel(
+    renderable: RenderableType, title: str | None = None, border_style: str = "arc.blue"
+):
     return Panel(
         renderable,
         title=title,
@@ -65,12 +67,12 @@ def arc_panel(renderable, title: str | None = None, border_style: str = "arc.blu
 
 def arc_text(label: str, value: str) -> Text:
     t = Text()
-    t.append(label, style="arc.muted")
-    t.append(value, style="arc.text")
+    _ = t.append(label, style="arc.muted")
+    _ = t.append(value, style="arc.text")
     return t
 
 
-def arc_status(kind: str, message: str) -> Text:
+def arc_status(kind: Literal["ok", "info", "warn", "error"], message: str) -> Text:
     styles = {
         "ok": "arc.ok",
         "info": "arc.info",
@@ -78,6 +80,6 @@ def arc_status(kind: str, message: str) -> Text:
         "error": "arc.error",
     }
     t = Text()
-    t.append("● ", style=styles.get(kind, "arc.info"))
-    t.append(message, style="arc.text")
+    _ = t.append("● ", style=styles.get(kind, "arc.info"))
+    _ = t.append(message, style="arc.text")
     return t

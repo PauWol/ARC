@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import override
 
-from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download  # pyright: ignore[reportUnknownVariableType]
+from huggingface_hub.utils import disable_progress_bars
 
 from src.util.constants import env, CONST
 
 
+_ = disable_progress_bars()
 api = HfApi()
 
 
@@ -46,6 +48,10 @@ class Model:
     files: list[str] = field(default_factory=list)
     downloads: int = 0
     local_path: Path | None = None
+
+    @override
+    def __str__(self) -> str:
+        return f"{self.repo_id:<55}↓ {self.downloads:>8,}   📦 {len(self.files)}"
 
 
 def list_models() -> list[Model]:
@@ -88,7 +94,6 @@ def search_gguf_models(query: str, limit: int = 20) -> list[Model]:
     for model in api.list_models(
         search=query,
         sort="downloads",
-        direction=-1,
         limit=limit,
     ):
         try:
@@ -97,7 +102,9 @@ def search_gguf_models(query: str, limit: int = 20) -> list[Model]:
             continue
 
         gguf_files = [
-            s.rfilename for s in info.siblings if s.rfilename.endswith(".gguf")
+            s.rfilename
+            for s in info.siblings  # pyright: ignore[reportOptionalIterable]
+            if s.rfilename.endswith(".gguf")
         ]
         if not gguf_files:
             continue
@@ -134,7 +141,7 @@ def download_gguf(
     target_dir = store / _safe_repo_dir(repo_id)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    snapshot_download(
+    _ = snapshot_download(
         repo_id=repo_id,
         local_dir=str(target_dir),
         allow_patterns=[f"*{quant.value}*.gguf"],
