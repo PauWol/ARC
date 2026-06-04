@@ -103,5 +103,4 @@ def think(runtime: LlamaRuntime, state: AgentState, context: str) -> dict[str, A
     )
 
     content = response["choices"][0]["message"]["content"]
-    print(content)
     return parse_content(content)

@@ -1,5 +1,5 @@
-from src.sandbox.runner import run_python
-from src.registry import ToolResult
+from src.tools.sandbox.runner import run_python
+from src.tools.registry import ToolResult
 
 
 def run_python_file(file_path: str):
@@ -8,7 +8,7 @@ def run_python_file(file_path: str):
             text = f.read()
 
     except Exception as e:
-        return ToolResult(False, f"error: {e[:200]}", {"error": e})
+        return ToolResult(False, f"error: {str(e)[:200]}", {"error": e})
 
     r = run_python(text)
 

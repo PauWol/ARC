@@ -8,8 +8,8 @@ from enum import Enum, auto
 from typing import Any, Callable, Optional
 
 from src.memory import AgentState
-from src.registry import ToolResult
-from src.validator import ValidationResult
+from src.tools.registry import ToolResult
+from src.roles import ValidationResult
 
 
 class EventType(Enum):
@@ -166,10 +166,11 @@ def emit(event_bus: EventBus, id: int, **kwargs):
             event_bus.emit(
                 Event(
                     EventType.CONTEXT_BUILT,
-                    {"context_len": len(str(kwargs.get("context"))),
+                    {
+                        "context_len": len(str(kwargs.get("context"))),
                         "tools": kwargs.get("tools"),
                         "base": kwargs.get("base"),
-                        "artifacts": kwargs.get("artifacts")
+                        "artifacts": kwargs.get("artifacts"),
                     },
                     run_id=run_id,
                     step=state.step_index,

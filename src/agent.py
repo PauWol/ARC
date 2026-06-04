@@ -5,11 +5,9 @@ import uuid
 from src.llama_runtime import LlamaRuntime, RuntimeOptions, ModelSource
 
 from src.memory import build_initial_state, AgentState
-from src.extractor import TaskExtractor, ExtractedTask
-from src.registry import ToolRegistry, ToolResult
+from src.roles import TaskExtractor, ExtractedTask, validate, think
+from src.tools.registry import ToolRegistry, ToolResult
 from src.tools import default_tools
-from src.think import think
-from src.validator import validate
 
 from src.events import Event, EventBus, EventType, emit
 
@@ -57,7 +55,7 @@ class Agent(LlamaRuntime):
             )
 
         artifacts = []
-        if not len(artifact_lines) > 1: # guard from empty only 'artifacts:' in list
+        if not len(artifact_lines) > 1:  # guard from empty only 'artifacts:' in list
             artifact_lines = []
         else:
             artifacts = artifact_lines[1:]
@@ -66,10 +64,9 @@ class Agent(LlamaRuntime):
 
         combined = "\n".join([base, "", relevant, "", "\n".join(artifact_lines)])
 
-        return combined,  base , tools , artifacts
-        
+        return combined, base, tools, artifacts
 
-    def act(self, action: dict, state: AgentState) -> ToolResult:
+    def act(self, action, state: AgentState) -> ToolResult:
         """Executing the plan (step) made by the LLM."""
         tool_name = action["tool"]
         tool_input = action.get("input", {})
@@ -117,9 +114,18 @@ class Agent(LlamaRuntime):
             while not self._stop_condition(state):
                 emit(event_bus, 2, run_id=run_id, state=state)
 
-                context, base, tools , artifacts = self.build_context(state)
+                context, base, tools, artifacts = self.build_context(state)
 
-                emit(event_bus, 3, run_id=run_id, state=state, context=context, base= base,tools=tools,artifacts=artifacts)
+                emit(
+                    event_bus,
+                    3,
+                    run_id=run_id,
+                    state=state,
+                    context=context,
+                    base=base,
+                    tools=tools,
+                    artifacts=artifacts,
+                )
 
                 emit(event_bus, 4, run_id=run_id, state=state)
                 t0 = time.time()
@@ -140,8 +146,6 @@ class Agent(LlamaRuntime):
                 emit(event_bus, 8, run_id=run_id, state=state)
                 t2 = time.time()
 
-                
-
                 if f_p_c > 3:
                     f = False
                     f_p_c = 0
@@ -149,9 +153,10 @@ class Agent(LlamaRuntime):
                     f = True
 
                 validation, fastPath = validate(
-                    self, state, action, result, self.registry.list_artifacts(),False
+                    self, state, action, result, self.registry.list_artifacts(), False
                 )
-                if fastPath: f_p_c +=1
+                if fastPath:
+                    f_p_c += 1
 
                 emit(
                     event_bus,

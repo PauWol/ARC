@@ -16,9 +16,9 @@ import warnings
 from RestrictedPython.Guards import safe_builtins, guarded_iter_unpack_sequence
 from RestrictedPython.Eval import default_guarded_getiter, default_guarded_getitem
 
-from src.registry import ToolResult
+from src.tools.registry import ToolResult
 
-from src.sandbox.allowlist import (
+from src.tools.sandbox.allowlist import (
     SAFE_BUILTINS,
     DANGEROUS,
     FORBIDDEN_NODES,
@@ -36,7 +36,7 @@ def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     return __import__(name, globals, locals, fromlist, level)
 
 
-_MERGED_BUILTINS: dict = {**safe_builtins, **SAFE_BUILTINS}
+_MERGED_BUILTINS = {**safe_builtins, **SAFE_BUILTINS}
 for _name in DANGEROUS:
     _MERGED_BUILTINS.pop(_name, None)
 
@@ -118,16 +118,13 @@ def _validate_code(code: str) -> None:
 
 def _worker(code: str, conn: Connection) -> None:
     try:
-        # ── 1. Resource limits ────────────────────────────────────────────────
         memory_bytes = MAX_MEMORY_MB * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
         resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_SECONDS, TIMEOUT_SECONDS))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
-        # ── 2. AST validation ─────────────────────────────────────────────────
         _validate_code(code)
 
-        # ── 3. Compile ────────────────────────────────────────────────────────
         # BUG FIX: suppress RestrictedPython's SyntaxWarning about 'printed'
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
@@ -140,8 +137,7 @@ def _worker(code: str, conn: Connection) -> None:
         def _print_(*args, **kwargs):
             print(*args, file=buffer, **kwargs)
 
-        # ── 4. Build sandbox globals ──────────────────────────────────────────
-        globals_dict: dict = {
+        globals_dict = {
             "__builtins__": dict(_MERGED_BUILTINS),
             # print — PrintCollector class; instance lands in globals as '_print'
             "_print_": _print_,
@@ -155,20 +151,13 @@ def _worker(code: str, conn: Connection) -> None:
             "_inplacevar_": _inplacevar_,  # BUG FIX: full operator set
             # write guard
             "_write_": lambda x: x,
+            "math": math,
+            "json": json,
+            "re": re,
+            "statistics": statistics,
         }
 
-        # add common modules as already imported
-        globals_dict.update(
-            {
-                "math": math,
-                "json": json,
-                "re": re,
-                "statistics": statistics,
-            }
-        )
-
-        # ── 5. Execute ────────────────────────────────────────────────────────
-        locals_dict: dict = {}
+        locals_dict = {}
         exec(byte_code, globals_dict, locals_dict)  # noqa: S102
 
         sys.stdout = sys_stdout

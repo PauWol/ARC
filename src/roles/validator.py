@@ -1,13 +1,12 @@
-# validator.py
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from src.llama_runtime import LlamaRuntime
 from src.memory import AgentState
-from src.registry import ToolResult, Artifact
+from src.tools.registry import ToolResult, Artifact
 from src.assets import json_grammar
 
 
@@ -106,8 +105,8 @@ def validate(
     action: dict[str, Any],
     result: ToolResult,
     artifacts: list[Artifact],
-    fast_path_enabled: bool = True
-) -> [ValidationResult,bool]:
+    fast_path_enabled: bool = True,
+) -> tuple[ValidationResult, Literal[True]] | tuple[ValidationResult, Literal[False]]:
     """
     Validate the latest step without choosing the next tool.
     """

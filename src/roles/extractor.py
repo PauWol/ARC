@@ -1,8 +1,7 @@
-# extractor.py
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from src.llama_runtime import LlamaRuntime
 from src.assets import json_grammar
 
@@ -30,18 +29,14 @@ INPUT_TOKEN_THRESHOLD = 300
 @dataclass(slots=True)
 class ExtractedTask:
     intent: str = ""
-    goals: list[str] = None  # type: ignore
-
-    def __post_init__(self) -> None:
-        if self.goals is None:
-            self.goals = []
+    goals: list[str] = field(default_factory=list[str])
 
 
 class TaskExtractor:
     """Tiny structured extractor for intent and goals."""
 
     def __init__(self, runtime: LlamaRuntime):
-        self.runtime = runtime
+        self.runtime: LlamaRuntime = runtime
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -65,15 +60,15 @@ class TaskExtractor:
             reset=True,
         )
 
-        content = response["choices"][0]["message"]["content"]
+        content: str = response["choices"][0]["message"]["content"]
 
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
             return ExtractedTask()
 
-        intent = str(data.get("intent", "")).strip()
-        goals_raw = data.get("goals", [])
+        intent: str = str(data.get("intent", "")).strip()
+        goals_raw: str = data.get("goals", [])
 
         goals: list[str] = []
         if isinstance(goals_raw, list):

@@ -22,6 +22,7 @@ RuntimePool       Direct dispatch: pool.chat(name, msgs) / pool.complete(name, p
                   LRU eviction: when max_loaded is set the least-recently-used
                   model is unloaded automatically before loading a new one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +33,8 @@ import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any, AsyncIterator, Iterator, Sequence
+from typing import Any
+from collections.abc import AsyncIterator, Iterator, Sequence
 
 try:
     import psutil
@@ -62,7 +64,7 @@ class HardwareProfile:
     logical_cores: int
     total_ram_gb: float
     free_ram_gb: float
-    gpu_offload: bool       # True if the llama.cpp build supports GPU offload
+    gpu_offload: bool  # True if the llama.cpp build supports GPU offload
 
     @classmethod
     def detect(cls) -> "HardwareProfile":
@@ -74,15 +76,16 @@ class HardwareProfile:
         if psutil is not None:
             physical = psutil.cpu_count(logical=False) or logical
             mem = psutil.virtual_memory()
-            total_ram = mem.total / (1024 ** 3)
-            free_ram = mem.available / (1024 ** 3)
+            total_ram = mem.total / (1024**3)
+            free_ram = mem.available / (1024**3)
         else:
             physical = max(logical // 2, 1)
 
         try:
             from llama_cpp import llama_supports_gpu_offload  # type: ignore
+
             gpu = llama_supports_gpu_offload()
-        except (ImportError, AttributeError):
+        except ImportError, AttributeError:
             gpu = False
 
         profile = cls(
@@ -140,7 +143,7 @@ class GenerationConfig:
     top_k: int = 40
     repeat_penalty: float = 1.1
     stop: list[str] = field(default_factory=list)
-    grammar: Any = None     # LlamaGrammar | None
+    grammar: Any = None  # LlamaGrammar | None
 
     def merge(self, **overrides: Any) -> "GenerationConfig":
         """Return a new config with the given fields overridden."""
@@ -149,10 +152,10 @@ class GenerationConfig:
     def to_kwargs(self) -> dict[str, Any]:
         """Convert to llama-cpp-python generation kwargs."""
         kw: dict[str, Any] = {
-            "max_tokens":     self.max_tokens,
-            "temperature":    self.temperature,
-            "top_p":          self.top_p,
-            "top_k":          self.top_k,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
             "repeat_penalty": self.repeat_penalty,
         }
         if self.stop:
@@ -164,8 +167,8 @@ class GenerationConfig:
 
 # Convenience presets — import and use directly.
 GEN_DEFAULT = GenerationConfig()
-GEN_GREEDY  = GenerationConfig(temperature=0.0, top_p=1.0, top_k=1)
-GEN_FAST    = GenerationConfig(max_tokens=128,  temperature=0.0, top_p=0.1)
+GEN_GREEDY = GenerationConfig(temperature=0.0, top_p=1.0, top_k=1)
+GEN_FAST = GenerationConfig(max_tokens=128, temperature=0.0, top_p=0.1)
 
 
 # ── Model source ──────────────────────────────────────────────────────────────
@@ -193,7 +196,7 @@ class ModelSource:
 
     def validate(self) -> None:
         local_ok = bool(self.model_path)
-        hf_ok    = bool(self.repo_id and self.filename)
+        hf_ok = bool(self.repo_id and self.filename)
         if local_ok == hf_ok:
             raise ValueError(
                 "Provide either model_path OR (repo_id + filename), not both/neither."
@@ -232,7 +235,7 @@ class RuntimeOptions:
     split_mode: int | None = None
 
     # Features
-    flash_attn: bool = True     # safe with any build; silently ignored if not compiled in
+    flash_attn: bool = True  # safe with any build; silently ignored if not compiled in
     use_mmap: bool = True
     use_mlock: bool = False
     seed: int = -1
@@ -267,7 +270,7 @@ class RuntimeOptions:
             n_batch=1024,
             n_ubatch=512,
             use_mlock=True,
-            idle_unload_seconds=None,   # never evict a fast model
+            idle_unload_seconds=None,  # never evict a fast model
             **overrides,
         )
 
@@ -294,12 +297,10 @@ class RuntimeOptions:
         """
         hw = hw or hardware()
 
-        n_threads = (
-            self.n_threads if self.n_threads is not None
-            else hw.physical_cores
-        )
+        n_threads = self.n_threads if self.n_threads is not None else hw.physical_cores
         n_threads_batch = (
-            self.n_threads_batch if self.n_threads_batch is not None
+            self.n_threads_batch
+            if self.n_threads_batch is not None
             else hw.logical_cores
         )
 
@@ -357,22 +358,22 @@ class LlamaRuntime:
     """
 
     def __init__(self, source: ModelSource, options: RuntimeOptions | None = None):
-        self.source  = source
+        self.source = source
         self.options = options or RuntimeOptions.auto()
         self.source.validate()
 
         self._llm: Llama | None = None
-        self._load_lock  = threading.RLock()
+        self._load_lock = threading.RLock()
         self._infer_lock = threading.Lock()
 
-        self._stop_event            = threading.Event()
-        self._last_used_monotonic   = time.monotonic()
+        self._stop_event = threading.Event()
+        self._last_used_monotonic = time.monotonic()
         self._last_usage: dict[str, int] | None = None
-        self._saved_state: LlamaState | None    = None
+        self._saved_state: LlamaState | None = None
 
         # System-prompt KV cache
-        self._sys_cache_key: str | None         = None
-        self._sys_cache_content: str | None     = None
+        self._sys_cache_key: str | None = None
+        self._sys_cache_content: str | None = None
         self._sys_cache_state: LlamaState | None = None
 
         self._executor: ThreadPoolExecutor | None = None
@@ -449,8 +450,8 @@ class LlamaRuntime:
                 self._llm = Llama(model_path=self.source.model_path, **kwargs)
             else:
                 self._llm = Llama.from_pretrained(
-                    repo_id=self.source.repo_id,          # type: ignore[arg-type]
-                    filename=self.source.filename,         # type: ignore[arg-type]
+                    repo_id=self.source.repo_id,  # type: ignore[arg-type]
+                    filename=self.source.filename,  # type: ignore[arg-type]
                     additional_files=self.source.additional_files or None,
                     local_dir=self.source.local_dir,
                     cache_dir=self.source.cache_dir,
@@ -520,18 +521,22 @@ class LlamaRuntime:
             )
             state = llm.save_state()
             with self._load_lock:
-                self._sys_cache_key     = key
+                self._sys_cache_key = key
                 self._sys_cache_content = content
-                self._sys_cache_state   = state
+                self._sys_cache_state = state
 
-        log.debug("System prompt cached (%d chars, %d tokens in KV).", len(content), state.n_tokens)
+        log.debug(
+            "System prompt cached (%d chars, %d tokens in KV).",
+            len(content),
+            state.n_tokens,
+        )
 
     def clear_system_prompt(self) -> None:
         """Discard the cached system prompt state."""
         with self._load_lock:
-            self._sys_cache_key     = None
+            self._sys_cache_key = None
             self._sys_cache_content = None
-            self._sys_cache_state   = None
+            self._sys_cache_state = None
 
     # ── Context helpers ───────────────────────────────────────────────────────
 
@@ -546,12 +551,12 @@ class LlamaRuntime:
     def context_budget(self) -> dict[str, int]:
         """Snapshot of current KV usage and remaining capacity."""
         with self._load_lock:
-            llm  = self.ensure_loaded()
+            llm = self.ensure_loaded()
             n_ctx = llm.n_ctx()
-            used  = int(llm.save_state().n_tokens)
+            used = int(llm.save_state().n_tokens)
             return {
-                "max":       n_ctx,
-                "used":      used,
+                "max": n_ctx,
+                "used": used,
                 "remaining": max(n_ctx - used, 0),
             }
 
@@ -559,7 +564,7 @@ class LlamaRuntime:
         """Clear the KV-cache without unloading weights."""
         with self._load_lock:
             self.ensure_loaded().reset()
-            self._last_usage  = None
+            self._last_usage = None
             self._saved_state = None
             self._touch()
 
@@ -596,7 +601,9 @@ class LlamaRuntime:
         cfg = self._resolve_config(config, **kwargs)
         with self._infer_lock:
             llm = self._prepare_inference(reset=reset)
-            response = llm.create_completion(prompt=prompt, stream=False, **cfg.to_kwargs())
+            response = llm.create_completion(
+                prompt=prompt, stream=False, **cfg.to_kwargs()
+            )
         self._record_usage(response)
         self._touch()
         return response  # type: ignore[return-value]
@@ -613,7 +620,9 @@ class LlamaRuntime:
         cfg = self._resolve_config(config, **kwargs)
         with self._infer_lock:
             llm = self._prepare_inference(reset=reset)
-            yield from llm.create_completion(prompt=prompt, stream=True, **cfg.to_kwargs())
+            yield from llm.create_completion(
+                prompt=prompt, stream=True, **cfg.to_kwargs()
+            )
         self._touch()
 
     def chat(
@@ -720,15 +729,15 @@ class LlamaRuntime:
             if not self.loaded:
                 return {"loaded": False}
             info: dict[str, Any] = {
-                "loaded":         True,
-                "model":          self.source.display_name,
+                "loaded": True,
+                "model": self.source.display_name,
                 "context_window": self._llm.n_ctx(),  # type: ignore[union-attr]
-                "last_usage":     dict(self._last_usage or {}),
-                "sys_cache":      self._sys_cache_key is not None,
+                "last_usage": dict(self._last_usage or {}),
+                "sys_cache": self._sys_cache_key is not None,
             }
         if psutil is not None:
             proc = psutil.Process()
-            info["rss_mb"]      = round(proc.memory_info().rss / (1024 ** 2), 1)
+            info["rss_mb"] = round(proc.memory_info().rss / (1024**2), 1)
             info["cpu_percent"] = proc.cpu_percent(interval=None)
         return info
 
@@ -740,7 +749,7 @@ class LlamaRuntime:
             llm = self.ensure_loaded()
             if reset:
                 llm.reset()
-                self._last_usage  = None
+                self._last_usage = None
                 self._saved_state = None
             self._touch()
         return llm
@@ -755,8 +764,10 @@ class LlamaRuntime:
             if self._sys_cache_state is None:
                 return None
             first = messages[0]
-            if (first.get("role") == "system"
-                    and first.get("content") == self._sys_cache_content):
+            if (
+                first.get("role") == "system"
+                and first.get("content") == self._sys_cache_content
+            ):
                 return self._sys_cache_state
         return None
 
@@ -775,9 +786,9 @@ class LlamaRuntime:
         if isinstance(response, dict):
             usage = response.get("usage") or {}
             self._last_usage = {
-                "prompt_tokens":     int(usage.get("prompt_tokens",     0)),
+                "prompt_tokens": int(usage.get("prompt_tokens", 0)),
                 "completion_tokens": int(usage.get("completion_tokens", 0)),
-                "total_tokens":      int(usage.get("total_tokens",      0)),
+                "total_tokens": int(usage.get("total_tokens", 0)),
             }
 
     def _touch(self) -> None:
@@ -791,10 +802,10 @@ class LlamaRuntime:
             try:
                 self._llm.close()
             finally:
-                self._llm             = None
-                self._saved_state     = None
-                self._last_usage      = None
-                self._sys_cache_state = None   # state is tied to a loaded model
+                self._llm = None
+                self._saved_state = None
+                self._last_usage = None
+                self._sys_cache_state = None  # state is tied to a loaded model
 
     def _require_executor(self) -> ThreadPoolExecutor:
         if self._executor is None:
@@ -804,10 +815,12 @@ class LlamaRuntime:
             )
         return self._executor
 
-    async def _bridge_stream(self, fn: Any, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+    async def _bridge_stream(
+        self, fn: Any, *args: Any, **kwargs: Any
+    ) -> AsyncIterator[Any]:
         """Bridge a sync generator to an async generator via a queue."""
         executor = self._require_executor()
-        loop     = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         queue: asyncio.Queue[Any] = asyncio.Queue()
         _done = object()
 
@@ -831,7 +844,7 @@ class LlamaRuntime:
 
     def _idle_loop(self) -> None:
         interval = max(self.options.idle_check_interval, 0.5)
-        timeout  = self.options.idle_unload_seconds
+        timeout = self.options.idle_unload_seconds
         assert timeout is not None
 
         while not self._stop_event.wait(interval):
@@ -845,7 +858,9 @@ class LlamaRuntime:
                 try:
                     with self._load_lock:
                         if time.monotonic() - self._last_used_monotonic >= timeout:
-                            log.info("Idle timeout — unloading %s.", self.source.display_name)
+                            log.info(
+                                "Idle timeout — unloading %s.", self.source.display_name
+                            )
                             self._unload()
                 finally:
                     self._infer_lock.release()
@@ -882,8 +897,8 @@ class RuntimePool:
 
     def __init__(self, max_loaded: int | None = None) -> None:
         self._runtimes: dict[str, LlamaRuntime] = {}
-        self._last_used: dict[str, float]        = {}
-        self._lock      = threading.Lock()
+        self._last_used: dict[str, float] = {}
+        self._lock = threading.Lock()
         self.max_loaded = max_loaded
 
     # ── Registration ──────────────────────────────────────────────────────────
@@ -1006,15 +1021,15 @@ class RuntimePool:
         """Per-runtime load status plus process-level RSS if psutil is present."""
         info: dict[str, Any] = {
             n: {
-                "loaded":     rt.loaded,
+                "loaded": rt.loaded,
                 "last_usage": rt.last_usage,
-                "last_used":  self._last_used.get(n, 0.0),
+                "last_used": self._last_used.get(n, 0.0),
             }
             for n, rt in self._runtimes.items()
         }
         if psutil is not None:
             proc = psutil.Process()
-            info["_process"] = {"rss_mb": round(proc.memory_info().rss / (1024 ** 2), 1)}
+            info["_process"] = {"rss_mb": round(proc.memory_info().rss / (1024**2), 1)}
         return info
 
     def __enter__(self) -> "RuntimePool":
