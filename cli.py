@@ -12,6 +12,7 @@ app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
     help="ARC — Action & Reasoning Core",
+    no_args_is_help=True,
 )
 
 

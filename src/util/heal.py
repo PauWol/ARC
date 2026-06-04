@@ -13,7 +13,7 @@ def _in_const(line: str) -> str | None:
     return None
 
 
-def check_missing_dot_env_entrys() -> [list[str], list[str] | list[str], None]:
+def check_missing_dot_env_entrys():
     """
     Check for missing or wrong '.env' entrys.
 

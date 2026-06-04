@@ -6,12 +6,10 @@ from pathlib import Path
 from typing import override
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download  # pyright: ignore[reportUnknownVariableType]
-from huggingface_hub.utils import disable_progress_bars
 
 from src.util.constants import env, CONST
 
 
-_ = disable_progress_bars()
 api = HfApi()
 
 

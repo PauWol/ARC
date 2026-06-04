@@ -16,9 +16,9 @@ ARC_VIOLET = "#7A22E2"
 ARC_VIOLET_DARK = "#5F23B1"
 ARC_TEXT = "#D6EBFB"
 ARC_MUTED = "#9EC0E0"
-
+ARC_GREEN = "#00E676"
 # Semantic colors
-ARC_OK = ARC_CYAN
+ARC_OK = ARC_GREEN
 ARC_INFO = ARC_BLUE
 ARC_WARN = ARC_VIOLET
 ARC_ERROR = "#FF5C8A"
@@ -32,6 +32,7 @@ ARC_THEME = Theme(
         "arc.blue.dark": ARC_BLUE_DARK,
         "arc.violet": ARC_VIOLET,
         "arc.violet.dark": ARC_VIOLET_DARK,
+        "arc.green": ARC_GREEN,
         "arc.text": ARC_TEXT,
         "arc.muted": ARC_MUTED,
         "arc.ok": ARC_OK,
@@ -55,11 +56,15 @@ def arc_rule(title: str = "ARC") -> Rule:
 
 
 def arc_panel(
-    renderable: RenderableType, title: str | None = None, border_style: str = "arc.blue"
+    renderable: RenderableType,
+    title: str | None = None,
+    subtitle: str | None = None,
+    border_style: str = "arc.blue",
 ):
     return Panel(
         renderable,
         title=title,
+        subtitle=subtitle,
         border_style=border_style,
         padding=(1, 2),
     )
@@ -72,14 +77,21 @@ def arc_text(label: str, value: str) -> Text:
     return t
 
 
-def arc_status(kind: Literal["ok", "info", "warn", "error"], message: str) -> Text:
+def arc_status(
+    kind: Literal["ok", "info", "warn", "error", "listing"],
+    message: str,
+) -> Text:
     styles = {
         "ok": "arc.ok",
         "info": "arc.info",
+        "listing": "arc.info",
         "warn": "arc.warn",
         "error": "arc.error",
     }
+
+    icons = {"ok": "✓ ", "info": "ℹ ", "warn": "⚠ ", "error": "✗ ", "listing": "● "}
+
     t = Text()
-    _ = t.append("● ", style=styles.get(kind, "arc.info"))
+    _ = t.append(icons.get(kind, "● "), style=styles.get(kind, "arc.info"))
     _ = t.append(message, style="arc.text")
     return t
