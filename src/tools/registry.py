@@ -11,13 +11,9 @@ from typing import Any, Callable
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-# ── constants ─────────────────────────────────────────────────────────────────
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_CACHE = Path(".registry_embeddings.db")
-
-
-# ── helpers ───────────────────────────────────────────────────────────────────
 
 
 def _sha256(text: str) -> str:
@@ -27,9 +23,6 @@ def _sha256(text: str) -> str:
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     """Cosine similarity.  Vectors pre-normalized → plain dot product."""
     return float(np.dot(a, b))
-
-
-# ── embedding store ───────────────────────────────────────────────────────────
 
 
 class EmbeddingStore:
@@ -45,16 +38,14 @@ class EmbeddingStore:
         path: Path = _DEFAULT_CACHE,
         model_name: str = _MODEL_NAME,
     ) -> None:
-        self._model_name = model_name
+        self._model_name: str = model_name
         self._model: SentenceTransformer | None = None
-        self._conn = sqlite3.connect(path,    check_same_thread=False)
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS embeddings "
+        self._conn: sqlite3.Connection = sqlite3.connect(path, check_same_thread=False)
+        _ = self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS embeddings "  # pyright: ignore[reportImplicitStringConcatenation]
             "(hash TEXT PRIMARY KEY, vector BLOB NOT NULL)"
         )
         self._conn.commit()
-
-    # ── public ────────────────────────────────────────────────────────────────
 
     def embed(self, text: str) -> np.ndarray:
         """Return a normalized float32 embedding, hitting the cache first."""
@@ -140,12 +131,12 @@ class ToolSpec:
 
 @dataclass(slots=True)
 class SearchHit:
-    kind: str          # "tool" | "artifact"
+    kind: str  # "tool" | "artifact"
     name: str
     score: float
     description: str = ""
     data: dict[str, Any] = field(default_factory=dict)
-    ref: Any = None    # ToolSpec | Artifact
+    ref: Any = None  # ToolSpec | Artifact
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
@@ -170,9 +161,12 @@ class ToolRegistry:
 
     def __init__(
         self,
-        cache_path: Path = _DEFAULT_CACHE,
+        cache_path: str | Path = _DEFAULT_CACHE,
         model_name: str = _MODEL_NAME,
     ) -> None:
+        if isinstance(cache_path, str):
+            cache_path = Path(cache_path)
+
         self._tools: dict[str, ToolSpec] = {}
         self._artifacts: list[Artifact] = []
         self._store = EmbeddingStore(cache_path, model_name)
@@ -227,7 +221,7 @@ class ToolRegistry:
         query: str,
         *,
         top_k: int = 5,
-        kind: str | None = None,   # "tool" | "artifact" | None (both)
+        kind: str | None = None,  # "tool" | "artifact" | None (both)
         min_score: float = 0.0,
     ) -> list[SearchHit]:
         """
@@ -284,19 +278,23 @@ class ToolRegistry:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:top_k]
 
-    def build_tool_context(self, query: str, *, top_k: int = 5) -> str:
+    def build_tool_context(self, query: str, *, top_k: int = 5):
         """
         Render the top-k search results as a compact prompt block consumed by
         the planner (think.py).
+
+        :returns: Tuple of tool-context-string, tools-list, artifacts-list
         """
-        t_out = []
-        o_out = []
+        t_out: list[SearchHit] = []
+        o_out: list[SearchHit] = []
 
         hits = self.search(query, top_k=top_k)
+
         if not hits:
             return "relevant: none"
 
         lines = ["relevant:"]
+
         for hit in hits:
             if hit.kind == "tool":
                 spec: ToolSpec = hit.ref
@@ -314,14 +312,11 @@ class ToolRegistry:
                 t_out.append(hit)
             else:
                 extra = (
-                    f"type={hit.data.get('type', '')} "
-                    f"path={hit.data.get('path', '')}"
+                    f"type={hit.data.get('type', '')} path={hit.data.get('path', '')}"
                 )
                 o_out.append(hit)
-            lines.append(
-                f"- {hit.kind}: {hit.name} | {hit.description} | {extra}"
-            )
-        return "\n".join(lines), t_out,o_out
+            lines.append(f"- {hit.kind}: {hit.name} | {hit.description} | {extra}")
+        return "\n".join(lines), t_out, o_out
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

@@ -1,0 +1,7 @@
+
+
+# Memory System
+
+- Dream concept which processes memories on an scheduled interval
+
+- Memory engine has fast working / short-term mem which is then processed to long-term-compact

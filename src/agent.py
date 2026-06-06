@@ -15,10 +15,10 @@ from src.events import Event, EventBus, EventType, emit
 class Agent(LlamaRuntime):
     def __init__(self, source: ModelSource, options: RuntimeOptions | None = None):
         super().__init__(source, options or RuntimeOptions.auto())
-        self.registry = ToolRegistry()
+        self.registry: ToolRegistry = ToolRegistry()
         default_tools(self.registry)
 
-        self.event_bus = EventBus()
+        self.event_bus: EventBus = EventBus()
 
     @staticmethod
     def _stop_condition(state: AgentState) -> bool:
@@ -32,7 +32,7 @@ class Agent(LlamaRuntime):
         tx = TaskExtractor(self)
         return tx.extract(query)
 
-    def build_context(self, state: AgentState) -> str:
+    def build_context(self, state: AgentState):
         """Used to build and return the current important context (tool-filtering, goal, intent etc.)."""
         base = state.compact_prompt()
 
@@ -60,7 +60,7 @@ class Agent(LlamaRuntime):
         else:
             artifacts = artifact_lines[1:]
 
-        artifacts.extend(other)
+        artifacts.extend(other)  # pyright: ignore[reportArgumentType]
 
         combined = "\n".join([base, "", relevant, "", "\n".join(artifact_lines)])
 
