@@ -1,190 +1,409 @@
+from dataclasses import dataclass, field
 import time
-import traceback
+from typing import Callable
 import uuid
 
-from src.llama_runtime import LlamaRuntime, RuntimeOptions, ModelSource
+from src.llama_runtime import LlamaRuntime
 
 from src.memory import build_initial_state, AgentState
-from src.roles import TaskExtractor, ExtractedTask, validate, think
-from src.tools.registry import ToolRegistry, ToolResult
-from src.tools import default_tools
+from src.roles import (
+    TaskExtractor,
+    ExtractedTask,
+    Planner,
+    Plan,
+    Validator,
+    build_validator_prompt,
+)
+from src.roles.synthesizer import Synthesizer
+from src.schema import ToolResult
+from src.tools.utils import tool_result_validator
 
-from src.events import Event, EventBus, EventType, emit
+from src.llama_runtime import ModelSource, RuntimeOptions
+from src.tools.sandbox.policy import SandboxPolicy
+from src.tools.builtin import make_builtin_tools
+
+from src.events import (
+    EventBus,
+    emit_agent_done,
+    emit_agent_error,
+    emit_agent_started,
+    emit_action_finished,
+    emit_action_planned,
+    emit_action_started,
+    emit_context_built,
+    emit_intent_extracted,
+    emit_state_updated,
+    emit_step_started,
+    emit_synthesis_finished,
+    emit_synthesis_started,
+    emit_thinking_started,
+    emit_tool_error,
+    emit_validation_finished,
+    emit_validation_started,
+)
+
+
+@dataclass(slots=True)
+class AgentConfig:
+    model: ModelSource
+    runtime: RuntimeOptions = field(
+        default_factory=lambda: RuntimeOptions.auto().with_ctx(8192)
+    )
+    sandbox_policy: SandboxPolicy = field(
+        default_factory=lambda: SandboxPolicy.default()
+    )
+    name: str = "Agent"
+    system_prompt: str = "You are a helpful AI assistant."
+    tools: list[Callable] = field(default_factory=list)
+    memory: bool = False
+    max_iterations: int = 10
+    max_replan: int = 3
+    max_consecutive_same_tool_call = 2
+
+    @classmethod
+    def from_path(cls, path: str, **kwargs):
+        return cls(ModelSource(path), **kwargs)
+
+    @classmethod
+    def from_path_with_default_tools(
+        cls, path: str, sandbox_policy=SandboxPolicy.default(), **kwargs
+    ):
+        return cls(
+            ModelSource(path),
+            sandbox_policy=sandbox_policy,
+            tools=make_builtin_tools(sandbox_policy),
+            **kwargs,
+        )
 
 
 class Agent(LlamaRuntime):
-    def __init__(self, source: ModelSource, options: RuntimeOptions | None = None):
-        super().__init__(source, options or RuntimeOptions.auto())
-        self.registry: ToolRegistry = ToolRegistry()
-        default_tools(self.registry)
-
+    def __init__(
+        self,
+        config: AgentConfig,
+    ):
+        super().__init__(config.model, config.runtime)
+        self._config = config
         self.event_bus: EventBus = EventBus()
 
-    @staticmethod
-    def _stop_condition(state: AgentState) -> bool:
+        self._extractor = TaskExtractor(self)
+        self._planner = Planner(self, config.tools)
+        self._validator = Validator(self)
+        self._synth = Synthesizer(self)
 
-        if state.done:
+        if len(config.tools) != 0:
+            print(f"[DEBUG] Following Tools are used: {config.tools}")
+        else:
+            print("[DEBUG] Attention no tools provided.")
+
+        self._tool_map = self._build_tool_map(config.tools)
+
+        print(self._tool_map)
+
+    def _build_tool_map(self, tools: list[Callable]):
+        return {
+            getattr(tool, "__name__", tool.__class__.__name__).lower(): tool
+            for tool in tools
+        }
+
+    def _is_tool(self, name: str):
+        if not self._tool_map:
+            return False
+
+        return name in self._tool_map.keys()
+
+    def _get_tool(self, name: str):
+        if self._tool_map:
+            return self._tool_map.get(name)
+        return None
+
+    def _stop_condition(self) -> bool:
+        if self.state.is_done:
+            return True
+
+        if self.state.step_index >= self._config.max_iterations:
             return True
 
         return False
 
-    def _extract_intent_goals(self, query: str) -> ExtractedTask:
-        tx = TaskExtractor(self)
-        return tx.extract(query)
+    async def _extract_intent_goals(self, query: str) -> ExtractedTask:
+        return await self._extractor.run(query)
 
-    def build_context(self, state: AgentState):
-        """Used to build and return the current important context (tool-filtering, goal, intent etc.)."""
-        base = state.compact_prompt()
+    async def plan(self, query: str):
+        return await self._planner.run(query)
 
-        query = " ".join(
-            x
-            for x in [
-                state.intent,
-                " ".join(state.goals),
-                " ".join(state.open_questions),
-            ]
-            if x
-        )
+    async def validate(self, query: str):
+        return await self._validator.run(query)
 
-        relevant, tools, other = self.registry.build_tool_context(query, top_k=6)
+    async def synth(self, query: str):
+        return await self._synth.run(query)
 
-        artifact_lines = ["artifacts:"]
-        for art in self.registry.list_artifacts()[-5:]:
-            artifact_lines.append(
-                f"- {art.type}: {art.name} | {art.description} | {art.path or 'inline'}"
-            )
+    def build_context(self):
+        """
+        Build the LLM context and the tool shortlist.
+        Returns:
+            full_context, base_context, tools, artifacts
+        """
+        st = self.state
 
-        artifacts = []
-        if not len(artifact_lines) > 1:  # guard from empty only 'artifacts:' in list
-            artifact_lines = []
-        else:
-            artifacts = artifact_lines[1:]
+        base = st.compact_prompt()  # pyright: ignore[reportArgumentType]
 
-        artifacts.extend(other)  # pyright: ignore[reportArgumentType]
+        return base
 
-        combined = "\n".join([base, "", relevant, "", "\n".join(artifact_lines)])
+    async def act(self, plan: Plan, state: AgentState) -> ToolResult:
+        """Execute the plan step produced by the planner."""
+        tool_name = str(plan.tool).lower().strip()
+        tool_input = plan.input if isinstance(plan.input, dict) else {}
+        tool = self._get_tool(tool_name)
 
-        return combined, base, tools, artifacts
+        print(f"{tool_name}({tool_input})")
 
-    def act(self, action, state: AgentState) -> ToolResult:
-        """Executing the plan (step) made by the LLM."""
-        tool_name = action["tool"]
-        tool_input = action.get("input", {})
-
-        tool = self.registry.get(tool_name)
         if tool is None:
+            error = ValueError(f"unknown tool: {tool_name}")
+            state.remember_error(f"unknown_tool:{tool_name}")
+            emit_tool_error(
+                self.event_bus,
+                run_id=self._current_run_id,
+                state=state,
+                tool_name=tool_name,
+                exc=error,
+            )  # type: ignore[attr-defined]
             return ToolResult(success=False, summary=f"unknown tool: {tool_name}")
 
         try:
-            result = tool.func(**tool_input)
+            result = await tool(**tool_input)
+            tool_result_validator(result, tool_name)
         except Exception as exc:
+            state.remember_error(
+                f"tool_failed:{tool_name} | {type(exc).__name__}: {exc}"
+            )
+            emit_tool_error(
+                self.event_bus,
+                run_id=self._current_run_id,  # type: ignore[attr-defined]
+                state=state,
+                tool_name=tool_name,
+                exc=exc,
+            )
             return ToolResult(
                 success=False,
                 summary=f"tool {tool_name} raised {type(exc).__name__}: {exc}",
             )
 
-        if isinstance(result, ToolResult):
-            for art in result.artifacts:
-                self.registry.register_artifact(art)
-            if result.artifacts:
-                state.remember(
-                    f"artifact_{state.step_index}",
-                    [a.name for a in result.artifacts],
-                )
-            return result
+        state.remember_fact(f"tool_success:{tool_name} | {tool_input}")
 
-        return ToolResult(success=True, summary=str(result))
+        if getattr(result, "summary", None) and getattr(result, "data", None):
+            state.remember_result(
+                f"tool_result:{tool_name} | {result.summary} | {result.data}"
+            )
+        elif getattr(result, "summary", None):
+            state.remember_result(f"tool_result:{tool_name} | {result.summary}")
 
-    def run(self, query: str):
+        arts = list(getattr(result, "artifacts", []) or [])
+        if arts:
+            state.extend_artifacts(arts)
+            state.remember(
+                f"artifacts_{state.step_index}",
+                [a.name for a in arts],
+            )
+
+        return result
+
+    async def _synth_helper(self, run_id: str) -> str:
+        emit_synthesis_started(self.event_bus, run_id=run_id, state=self.state)
+        synth_output = await self.synth(self.state.compact_prompt())
+        synth_output = (
+            f"{synth_output.response} | References: {synth_output.references}"
+        )
+        self.state.remember_fact(f"synthesized_output | step={self.state.step_index}")
+        emit_synthesis_finished(
+            self.event_bus,
+            run_id=run_id,
+            state=self.state,
+            output=synth_output,
+        )
+        print(synth_output)
+        return synth_output
+
+    async def run(self, query: str):
+        # Init local vars
         run_id = uuid.uuid4().hex
+        self._current_run_id = run_id  # used by act() for tool errors
         event_bus = self.event_bus
-        emit(event_bus, 0, run_id=run_id, query=query)
+        final_output: str | None = None
 
-        f_p_c = 0
+        emit_agent_started(
+            event_bus,
+            run_id=run_id,
+            query=query,
+            tools=list(self._tool_map.keys()),
+        )
 
         try:
-            i_g = self._extract_intent_goals(query)
+            # extract intent and goals
+            i_g = await self._extract_intent_goals(query)
+            self.state = build_initial_state(query)
+            self.state.intent = i_g.intent
+            self.state.goals = i_g.goals
 
-            state = build_initial_state(query)
-            state.intent = i_g.intent
-            state.goals = i_g.goals
+            emit_intent_extracted(event_bus, run_id=run_id, state=self.state)
+            emit_state_updated(
+                event_bus, run_id=run_id, state=self.state, note="intent extracted"
+            )
 
-            emit(event_bus, 1, run_id=run_id, state=state)
+            while not self._stop_condition():
+                emit_step_started(event_bus, run_id=run_id, state=self.state)
 
-            while not self._stop_condition(state):
-                emit(event_bus, 2, run_id=run_id, state=state)
+                # 1. build context of that exe round
+                context = self.build_context()
 
-                context, base, tools, artifacts = self.build_context(state)
-
-                emit(
+                emit_context_built(
                     event_bus,
-                    3,
                     run_id=run_id,
-                    state=state,
+                    state=self.state,
                     context=context,
-                    base=base,
-                    tools=tools,
-                    artifacts=artifacts,
+                    tools=list(self._tool_map.keys()),
                 )
 
-                emit(event_bus, 4, run_id=run_id, state=state)
-                t0 = time.time()
+                emit_thinking_started(event_bus, run_id=run_id, state=self.state)
+                _plan = await self.plan(context)
+                self.state.remember_fact(
+                    f"plan:{_plan.tool}({_plan.input}) | {_plan.reason}"
+                )
 
-                action = think(self, state, context=context)
+                self.state.set_status("planned")
+                emit_action_planned(
+                    event_bus, run_id=run_id, state=self.state, action=_plan
+                )
+                emit_state_updated(
+                    event_bus, run_id=run_id, state=self.state, note="plan created"
+                )
 
-                emit(event_bus, 5, run_id=run_id, state=state, t0=t0, action=action)
-                emit(event_bus, 6, run_id=run_id, state=state, action=action)
+                if "finish" in str(_plan.tool).lower():
+                    self.state.set_status("done")
+                    final_output = await self._synth_helper(run_id)
+                    emit_agent_done(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        output=final_output,
+                    )
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="finished via finish tool",
+                    )
+                    return self.state
 
+                emit_action_started(
+                    event_bus, run_id=run_id, state=self.state, action=_plan
+                )
                 t1 = time.time()
 
-                result = self.act(action, state)
+                result = await self.act(_plan, self.state)
 
-                emit(event_bus, 7, run_id=run_id, state=state, result=result, t1=t1)
+                emit_action_finished(
+                    event_bus,
+                    run_id=run_id,
+                    state=self.state,
+                    result=result,
+                    t0=t1,
+                )
 
-                state.remember(f"obs_{state.step_index}", result.summary)
-
-                emit(event_bus, 8, run_id=run_id, state=state)
+                emit_validation_started(event_bus, run_id=run_id, state=self.state)
                 t2 = time.time()
 
-                if f_p_c > 3:
-                    f = False
-                    f_p_c = 0
-                else:
-                    f = True
-
-                validation, fastPath = validate(
-                    self, state, action, result, self.registry.list_artifacts(), False
+                validation = await self.validate(
+                    build_validator_prompt(self.state, result, _plan)
                 )
-                if fastPath:
-                    f_p_c += 1
-
-                emit(
+                self.state.remember_fact(
+                    f"validation:{validation.status} | {validation.reason} | {validation.missing}"
+                )
+                emit_validation_finished(
                     event_bus,
-                    9,
                     run_id=run_id,
-                    state=state,
+                    state=self.state,
                     validation=validation,
                     t2=t2,
                 )
 
-                if validation.done or validation.status == "complete":
-                    state.done = True
-                    state.status = "done"
-                elif validation.status == "present":
-                    state.status = "present"
-                elif validation.status == "replan":
-                    state.advance("Need replanning old approach failed")
-                    state.status = "new"
-                    state.open_questions = validation.missing
-                else:
-                    state.advance()
-                    state.status = "working"
+                if validation.status == "done":
+                    self.state.set_status("present")
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="validation done",
+                    )
+                    final_output = await self._synth_helper(run_id)
+                    self.state.set_status("done")
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="synthesis complete",
+                    )
 
-            emit(event_bus, 10, run_id=run_id, state=state)
+                elif validation.status == "present":
+                    self.state.set_status("present")
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="validation requested presentable output",
+                    )
+                    await self._synth_helper(run_id)
+                    self.state.advance("presented what was done till now")
+                    self.state.set_status("working")
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="continued after presenting",
+                    )
+
+                elif validation.status == "replan":
+                    self.state.advance("Need replanning old approach failed")
+                    self.state.set_status("replan")
+                    if validation.missing:
+                        self.state.open_questions = list(validation.missing)
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="replan requested",
+                    )
+
+                else:
+                    self.state.advance()
+                    self.state.set_status("working")
+                    emit_state_updated(
+                        event_bus,
+                        run_id=run_id,
+                        state=self.state,
+                        note="continued working",
+                    )
+
+            emit_agent_done(
+                event_bus, run_id=run_id, state=self.state, output=final_output
+            )
+            emit_state_updated(
+                event_bus, run_id=run_id, state=self.state, note="stopped by condition"
+            )
+            return self.state
 
         except Exception as exc:
-            emit(event_bus, 11, run_id=run_id, state=state, exc=exc, query=query)  # type: ignore
+            if getattr(self, "state", None) is not None:
+                self.state.error = f"{type(exc).__name__}: {exc}"
+                self.state.set_status("error")
+            emit_agent_error(
+                event_bus,
+                run_id=run_id,
+                state=getattr(self, "state", None),
+                query=query,
+                exc=exc,
+            )
             raise
 
-        finally:
-            self.registry.close()
+
+# TODO: State transitions and updates need to be checked and updated
+# TODO: Synthesized answer needs to event handled -> update events

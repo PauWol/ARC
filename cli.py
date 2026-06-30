@@ -1,6 +1,7 @@
 # main.py
 import typer
 from rich.traceback import install
+from src.ui.commands.run import run
 from src.ui.theme import console, arc_rule, arc_panel, arc_status
 from src.ui.commands.doctor import doctor
 from src.ui.commands.models import app as models_app
@@ -16,14 +17,10 @@ app = typer.Typer(
 )
 
 
-@app.command()
-def run():
-    console.print(arc_rule("ARC"))
-    console.print(arc_panel("Runtime ready", title="Status", border_style="arc.violet"))
-    console.print(arc_status("ok", "Loaded local model"))
+_ = app.command()(run)
 
 
-app.command()(doctor)
+_ = app.command()(doctor)
 
 app.add_typer(
     models_app,

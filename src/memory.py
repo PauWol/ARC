@@ -4,31 +4,33 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.schema import Artifact
 
-# ── cleanup patterns ──────────────────────────────────────────────────────────
-
+STATE_VALUES = {
+    "new",
+    "planned",
+    "working",
+    "present",
+    "done",
+    "replan",
+    "error",
+}
 _CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]{3,}`")
-_URL_RE = re.compile(r"https?://[^\s\'\"<>()\[\]]+|www\.[^\s\'\"<>()\[\]]+", re.I)
+_URL_RE = re.compile(r"https?://[^\s'\"<>()\[\]]+|www\.[^\s'\"<>()\[\]]+", re.I)
 _PATH_RE = re.compile(
-    r"(?:[A-Za-z]:\\[\w\\.\-/]+)"  # Windows: C:\foo\bar
-    r"|(?:/[\w.\-/]+(?:\.\w+)?)"  # Unix absolute: /usr/local/bin
-    r"|(?:\.{1,2}/[\w.\-/]+(?:\.\w+)?)",  # Relative: ./foo, ../bar.py
+    r"(?:[A-Za-z]:\\[\w\\.\-/]+)"
+    r"|(?:/[\w.\-/]+(?:\.\w+)?)"
+    r"|(?:\.{1,2}/[\w.\-/]+(?:\.\w+)?)",
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalize_text(text: str) -> str:
-    """Collapse whitespace and trim the string."""
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def strip_context_noise(text: str) -> str:
-    """
-    Remove code blocks, inline code, URLs, and file paths from user input.
-
-    This is the cleaned text you can use for intent extraction or prompt packing.
-    """
     text = _CODE_BLOCK_RE.sub(" ", text)
     text = _INLINE_CODE_RE.sub(" ", text)
     text = _URL_RE.sub(" ", text)
@@ -37,45 +39,38 @@ def strip_context_noise(text: str) -> str:
 
 
 def extract_context_items(text: str) -> list[str]:
-    """
-    Extract non-core context items such as code, URLs, and paths.
-
-    These are stored separately so the agent can still use them if needed.
-    """
     items: list[str] = []
     seen: set[str] = set()
 
     def add(tag: str, value: str) -> None:
         value = normalize_text(value)
+        if not value:
+            return
         key = f"{tag}:{value.lower()}"
-        if value and key not in seen:
-            seen.add(key)
-            items.append(f"[{tag}] {value}")
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(f"{tag}: {value}")
 
-    for match in _CODE_BLOCK_RE.finditer(text):
-        add("code", match.group().strip("`"))
+    for m in _CODE_BLOCK_RE.finditer(text):
+        add("code", m.group().strip("`"))
 
-    for match in _INLINE_CODE_RE.finditer(text):
-        add("code", match.group().strip("`"))
+    for m in _INLINE_CODE_RE.finditer(text):
+        add("code", m.group().strip("`"))
 
-    for match in _URL_RE.finditer(text):
-        add("url", match.group())
+    for m in _URL_RE.finditer(text):
+        add("url", m.group())
 
-    for match in _PATH_RE.finditer(text):
-        add("path", match.group())
+    for m in _PATH_RE.finditer(text):
+        add("path", m.group())
 
     return items
-
-
-# ── state ────────────────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
 class AgentState:
     """
-    Minimal per-job state for a simple LLM agent.
-
-    This is the short-term / working memory for the current task.
+    Working memory for a single agent task.
     """
 
     raw_input: str
@@ -88,17 +83,23 @@ class AgentState:
     context_items: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
 
-    working_memory: dict[str, Any] = field(default_factory=dict)
+    working_memory: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "facts": [],
+            "results": [],
+            "errors": [],
+            "temp": [],
+        }
+    )
+    step_log: list[str] = field(default_factory=list)
+    artifacts: list[Artifact] = field(default_factory=list)
 
-    task_type: str = ""
     step_index: int = 0
     status: str = "new"
-    done: bool = False
     error: str | None = None
 
     @classmethod
     def from_user_input(cls, text: str) -> "AgentState":
-        """Create initial state from raw user input."""
         return cls(
             raw_input=text,
             cleaned_input=strip_context_noise(text),
@@ -106,54 +107,95 @@ class AgentState:
         )
 
     def remember(self, key: str, value: Any) -> None:
-        """Store a working-memory value for the current job."""
         self.working_memory[key] = value
 
+    def register_artifact(self, art: Artifact):
+        self.artifacts.append(art)
+
+    def extend_artifacts(self, arts: list[Artifact]):
+        self.artifacts.extend(arts)
+
+    def remember_fact(self, value: str) -> None:
+        self.working_memory["facts"].append(value)
+
+    def remember_error(self, value: str) -> None:
+        self.working_memory["errors"].append(value)
+
+    def remember_result(self, value: str):
+        self.working_memory["results"].append(value)
+
+    def set_status(self, new_status: str) -> None:
+        if new_status not in STATE_VALUES:
+            raise ValueError(
+                f"Transition to state {new_status} not valid. State not supported!"
+            )
+
+        self.status = new_status
+
     def forget(self, key: str) -> None:
-        """Remove one working-memory item if present."""
         self.working_memory.pop(key, None)
 
     def advance(self, note: str | None = None) -> None:
-        """Move to the next step and optionally store a note."""
         self.step_index += 1
+
+        entry = f"step {self.step_index}"
         if note:
-            self.remember(f"step_{self.step_index}", note)
+            entry += f": {note}"
 
-    def compact_prompt(self) -> str:
-        """
-        Render the most important state into a short prompt block.
+        self.step_log.append(entry)
 
-        Useful for tool calls, planner prompts, or executor prompts.
-        """
-        parts: list[str] = []
+        self.remember(f"step_{self.step_index}", note or "")
+
+    def _format_list(self, title: str, items: list[str]) -> list[str]:
+        if not items:
+            return []
+        return [f"{title}:"] + [f"- {i}" for i in items]
+
+    def _artifact_summary(self, a: Artifact) -> str:
+        tags = ",".join(a.tags[:4]) if a.tags else ""
+        return f"{a.type} | {a.name} | {tags} | {a.description}"
+
+    def compact_prompt(self, extra_artifacts: list[Artifact] | None = None) -> str:
+        extra_artifacts = extra_artifacts or []
+
+        lines: list[str] = []
 
         if self.intent:
-            parts.append(f"intent: {self.intent}")
+            lines += ["INTENT:", self.intent]
 
-        if self.goals:
-            parts.append("goals: " + "; ".join(self.goals[:3]))
-
-        if self.constraints:
-            parts.append("constraints: " + "; ".join(self.constraints[:3]))
-
-        if self.context_items:
-            parts.append("context: " + "; ".join(self.context_items[:4]))
-
-        if self.open_questions:
-            parts.append("open: " + "; ".join(self.open_questions[:3]))
+        lines += self._format_list("GOALS", self.goals)
+        lines += self._format_list("CONSTRAINTS", self.constraints)
+        lines += self._format_list("CONTEXT", self.context_items)
+        lines += self._format_list("OPEN_QUESTIONS", self.open_questions)
 
         if self.working_memory:
-            parts.append(
-                "memory: "
-                + "; ".join(
-                    f"{k}={v}" for k, v in list(self.working_memory.items())[:4]
-                )
-            )
+            lines.append("WORKING_MEMORY:")
+            for k, v in self.working_memory.items():
+                lines.append(f"- {k}: {v}")
 
-        return "\n".join(parts)
+        if extra_artifacts:
+            lines.append("ARTIFACTS:")
+            for a in extra_artifacts:
+                lines.append(f"- {self._artifact_summary(a)}")
 
-    def as_dict(self) -> dict[str, Any]:
-        """Return a serializable snapshot of the state."""
+        return "\n".join(lines)
+
+    def state_snapshot(self) -> str:
+        return "\n".join(
+            [
+                f"STATUS: {self.status}",
+                f"STEP: {self.step_index}",
+                f"INTENT: {self.intent}",
+                f"FACTS: {self.working_memory.get('facts', [])[:5]}",
+                f"ERRORS: {self.working_memory.get('errors', [])[-3:]}",
+            ]
+        )
+
+    @property
+    def is_done(self) -> bool:
+        return self.status == "done"
+
+    def to_dict(self) -> dict[str, Any]:
         return {
             "raw_input": self.raw_input,
             "cleaned_input": self.cleaned_input,
@@ -163,36 +205,18 @@ class AgentState:
             "context_items": list(self.context_items),
             "open_questions": list(self.open_questions),
             "working_memory": dict(self.working_memory),
-            "task_type": self.task_type,
             "step_index": self.step_index,
             "status": self.status,
-            "done": self.done,
             "error": self.error,
         }
 
     def __repr__(self) -> str:
         return (
             f"AgentState(intent={self.intent!r}, goals={self.goals}, "
-            f"constraints={self.constraints}, context_items={self.context_items}, "
-            f"open_questions={self.open_questions}, step_index={self.step_index}, "
-            f"status={self.status!r}, done={self.done})"
+            f"constraints={self.constraints}, step={self.step_index}, "
+            f"status={self.status!r})"
         )
 
 
-# ── tiny agent-side helpers ───────────────────────────────────────────────────
-
-
 def build_initial_state(query: str) -> AgentState:
-    """Convenience helper for creating the first state object."""
     return AgentState.from_user_input(query)
-
-
-def attach_plan(state: AgentState, plan: list[str]) -> None:
-    """Store the current plan in working memory and sync it to state."""
-    state.remember("plan", plan)
-    state.status = "planned"
-
-
-def attach_observation(state: AgentState, observation: str) -> None:
-    """Store one observation from a tool or model step."""
-    state.remember(f"obs_{state.step_index}", observation)

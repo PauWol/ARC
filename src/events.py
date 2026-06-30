@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import time
-import uuid
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from src.memory import AgentState
-from src.tools.registry import ToolResult
 from src.roles import ValidationResult
+from src.schema import ToolResult
 
 
 class EventType(Enum):
@@ -18,13 +18,14 @@ class EventType(Enum):
     STEP_STARTED = auto()
     CONTEXT_BUILT = auto()
     THINKING_STARTED = auto()
-    THINKING_ENDED = auto()
     ACTION_PLANNED = auto()
-    ACTION_EXECUTING = auto()
-    ACTION_EXECUTED = auto()
+    ACTION_STARTED = auto()
+    ACTION_FINISHED = auto()
     VALIDATION_STARTED = auto()
-    VALIDATION_DONE = auto()
-    MEMORY_UPDATED = auto()
+    VALIDATION_FINISHED = auto()
+    SYNTHESIS_STARTED = auto()
+    SYNTHESIS_FINISHED = auto()
+    STATE_UPDATED = auto()
     AGENT_DONE = auto()
     AGENT_ERROR = auto()
     TOOL_ERROR = auto()
@@ -55,7 +56,9 @@ class EventBus:
             self._listeners.append(fn)
 
     def unsubscribe(self, fn: Callable[[Event], None]) -> None:
-        self._listeners = [l for l in self._listeners if l is not fn]
+        self._listeners = [
+            listener for listener in self._listeners if listener is not fn
+        ]
 
     def emit(self, event: Event) -> None:
         self._history.append(event)
@@ -66,193 +69,465 @@ class EventBus:
             try:
                 fn(event)
             except Exception as exc:
-                # Never break agent execution because of a listener
-                err = Event(
-                    type=EventType.WARNING,
-                    payload={"listener": getattr(fn, "__name__", str(fn))},
-                    error=f"{type(exc).__name__}: {exc}",
-                    source="event_bus",
+                self._history.append(
+                    Event(
+                        type=EventType.WARNING,
+                        payload={
+                            "listener": getattr(fn, "__name__", str(fn)),
+                            "message": "listener raised while handling event",
+                        },
+                        source="event_bus",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
                 )
-                self._history.append(err)
 
     def history(self) -> list[Event]:
         return list(self._history)
 
 
-def _get_state(**kwargs) -> AgentState:
+def _ensure_state(kwargs: dict[str, Any]) -> AgentState:
     state = kwargs.get("state")
     if not isinstance(state, AgentState):
-        raise ValueError("Kwarg key state is not of type AgentState!")
-
+        raise ValueError("Missing or invalid 'state' kwarg; expected AgentState.")
     return state
 
 
-def _get_t(tn: str, **kwargs) -> float:
-    tnv = kwargs.get(tn)
-
-    if not isinstance(tnv, float):
-        raise ValueError(f"Kwargs key {tn} of value {tnv} must be float.")
-
-    return tnv  # type: ignore
+def _ensure_run_id(kwargs: dict[str, Any]) -> str:
+    run_id = kwargs.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("Missing or invalid 'run_id' kwarg.")
+    return run_id
 
 
-def emit(event_bus: EventBus, id: int, **kwargs):
+def _duration_ms(start: Any) -> float:
+    if not isinstance(start, (float, int)):
+        raise ValueError(f"Expected numeric start time, got {type(start).__name__}.")
+    return (time.time() - float(start)) * 1000.0
+
+
+def _validate_tool_result(result: Any) -> ToolResult:
+    if not isinstance(result, ToolResult):
+        raise ValueError("Kwarg 'result' must be a ToolResult instance.")
+    return result
+
+
+def _validate_validation_result(result: Any) -> ValidationResult:
+    if not isinstance(result, ValidationResult):
+        raise ValueError("Kwarg 'validation' must be a ValidationResult instance.")
+    return result
+
+
+def emit_event(
+    event_bus: EventBus,
+    event_type: EventType,
+    *,
+    run_id: str,
+    step: int | None = None,
+    payload: dict[str, Any] | None = None,
+    duration_ms: float | None = None,
+    error: str | None = None,
+    source: str = "agent",
+) -> None:
+    event_bus.emit(
+        Event(
+            type=event_type,
+            payload=payload or {},
+            run_id=run_id,
+            step=step,
+            duration_ms=duration_ms,
+            error=error,
+            source=source,
+        )
+    )
+
+
+def emit_agent_started(
+    event_bus: EventBus, *, run_id: str, query: str, tools: list[str] | None = None
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.AGENT_STARTED,
+        run_id=run_id,
+        payload={
+            "query": query,
+            "tools": tools or [],
+        },
+    )
+
+
+def emit_intent_extracted(
+    event_bus: EventBus, *, run_id: str, state: AgentState
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.INTENT_EXTRACTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "intent": state.intent,
+            "goals": list(state.goals),
+            "constraints": list(state.constraints),
+            "open_questions": list(state.open_questions),
+        },
+    )
+
+
+def emit_step_started(event_bus: EventBus, *, run_id: str, state: AgentState) -> None:
+    emit_event(
+        event_bus,
+        EventType.STEP_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "state": state.to_dict(),
+            "status": state.status,
+        },
+    )
+
+
+def emit_context_built(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    context: str,
+    tools: list[str] | None = None,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.CONTEXT_BUILT,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "context_len": len(context),
+            "context_preview": context[:500],
+            "tools": tools or [],
+            "artifacts_count": len(state.artifacts),
+        },
+    )
+
+
+def emit_thinking_started(
+    event_bus: EventBus, *, run_id: str, state: AgentState
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.THINKING_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={"status": state.status},
+    )
+
+
+def emit_action_planned(
+    event_bus: EventBus, *, run_id: str, state: AgentState, action: Any
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.ACTION_PLANNED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "action": action,
+            "tool": getattr(action, "tool", None),
+            "input": getattr(action, "input", None),
+            "reason": getattr(action, "reason", None),
+        },
+    )
+
+
+def emit_action_started(
+    event_bus: EventBus, *, run_id: str, state: AgentState, action: Any
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.ACTION_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "tool": getattr(action, "tool", None),
+            "input": getattr(action, "input", None),
+        },
+    )
+
+
+def emit_action_finished(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    result: ToolResult,
+    t0: Any,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.ACTION_FINISHED,
+        run_id=run_id,
+        step=state.step_index,
+        duration_ms=_duration_ms(t0),
+        payload={
+            "success": result.success,
+            "summary": result.summary,
+            "data": getattr(result, "data", None),
+            "artifacts": [a.name for a in getattr(result, "artifacts", []) or []],
+        },
+    )
+
+
+def emit_validation_started(
+    event_bus: EventBus, *, run_id: str, state: AgentState
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.VALIDATION_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={"status": state.status},
+    )
+
+
+def emit_validation_finished(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    validation: ValidationResult,
+    t2: Any,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.VALIDATION_FINISHED,
+        run_id=run_id,
+        step=state.step_index,
+        duration_ms=_duration_ms(t2),
+        payload={
+            "status": validation.status,
+            "reason": validation.reason,
+            "missing": list(getattr(validation, "missing", []) or []),
+        },
+    )
+
+
+def emit_synthesis_started(
+    event_bus: EventBus, *, run_id: str, state: AgentState
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.SYNTHESIS_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={"status": state.status},
+    )
+
+
+def emit_synthesis_finished(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    output: str,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.SYNTHESIS_FINISHED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "output": output,
+            "output_len": len(output),
+        },
+    )
+
+
+def emit_state_updated(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    note: str | None = None,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.STATE_UPDATED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "state": state.to_dict(),
+            "note": note,
+            "status": state.status,
+        },
+    )
+
+
+def emit_agent_done(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    output: str | None = None,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.AGENT_DONE,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "state": state.to_dict(),
+            "output": output,
+        },
+    )
+
+
+def emit_tool_error(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    tool_name: str,
+    exc: Exception,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.TOOL_ERROR,
+        run_id=run_id,
+        step=state.step_index,
+        error=f"{type(exc).__name__}: {exc}",
+        payload={
+            "tool": tool_name,
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+
+def emit_agent_error(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState | None,
+    query: str,
+    exc: Exception,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.AGENT_ERROR,
+        run_id=run_id,
+        step=getattr(state, "step_index", None),
+        error=f"{type(exc).__name__}: {exc}",
+        payload={
+            "query": query,
+            "state": state.to_dict() if state is not None else None,
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+
+_EVENT_ID_MAP: dict[int, EventType] = {
+    0: EventType.AGENT_STARTED,
+    1: EventType.INTENT_EXTRACTED,
+    2: EventType.STEP_STARTED,
+    3: EventType.CONTEXT_BUILT,
+    4: EventType.THINKING_STARTED,
+    5: EventType.ACTION_PLANNED,
+    6: EventType.ACTION_STARTED,
+    7: EventType.ACTION_FINISHED,
+    8: EventType.VALIDATION_STARTED,
+    9: EventType.VALIDATION_FINISHED,
+    10: EventType.AGENT_DONE,
+    11: EventType.AGENT_ERROR,
+}
+
+
+def emit(event_bus: EventBus, id: int, **kwargs) -> None:
     """
-    Emit the an agent-event by id and required kwargs.
+    Backwards-compatible event emission wrapper.
 
-    :param event_bus: The EventBus instance
-    :param id: the id of the event
-
-    Event Ids and their Kwargs:
-
-    > ! every event needs the 'run_id' !
-
-    - 0 -> query
-    - 1 -> state
-    - 2 -> state
-    - 3 -> state, context
-    - 4 -> state
-    - 5 -> state, action, t0
-    - 6 -> state, action
-    - 7 -> state, result, t1
-    - 8 -> state
-    - 9 -> state, validation, t2
-    - 10 ->  state
-    - 11 -> state, query, exc
-
+    Prefer the typed helpers above for new code.
     """
 
     if not kwargs:
         raise ValueError("Missing kwargs!")
 
-    run_id = kwargs.get("run_id")
-
-    if not run_id:
-        raise ValueError("Missing or Invalid param 'run_id' for kwargs!")
+    run_id = _ensure_run_id(kwargs)
 
     if id == 0:
-        event_bus.emit(
-            Event(
-                EventType.AGENT_STARTED,
-                {"query": kwargs.get("query")},
-                run_id=run_id,
-            )
+        emit_agent_started(
+            event_bus,
+            run_id=run_id,
+            query=str(kwargs.get("query", "")),
+            tools=list(kwargs.get("tools") or []),
         )
         return
 
-    state = _get_state(**kwargs)
+    state = _ensure_state(kwargs)
 
     match id:
         case 1:
-            event_bus.emit(
-                Event(
-                    EventType.INTENT_EXTRACTED,
-                    {"intent": state.intent, "goals": state.goals},
-                    run_id=run_id,
-                )
-            )
-
+            emit_intent_extracted(event_bus, run_id=run_id, state=state)
         case 2:
-            event_bus.emit(
-                Event(
-                    EventType.STEP_STARTED,
-                    {"state": state.as_dict()},
-                    run_id=run_id,
-                    step=state.step_index,
-                )
-            )
-
+            emit_step_started(event_bus, run_id=run_id, state=state)
         case 3:
-            event_bus.emit(
-                Event(
-                    EventType.CONTEXT_BUILT,
-                    {
-                        "context_len": len(str(kwargs.get("context"))),
-                        "tools": kwargs.get("tools"),
-                        "base": kwargs.get("base"),
-                        "artifacts": kwargs.get("artifacts"),
-                    },
-                    run_id=run_id,
-                    step=state.step_index,
-                )
+            emit_context_built(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                context=str(kwargs.get("context", "")),
+                tools=list(kwargs.get("tools") or []),
             )
-
         case 4:
-            event_bus.emit(
-                Event(
-                    EventType.THINKING_STARTED,
-                    {},
-                    run_id=run_id,
-                    step=state.step_index,
-                )
-            )
-
+            emit_thinking_started(event_bus, run_id=run_id, state=state)
         case 5:
-            event_bus.emit(
-                Event(
-                    EventType.THINKING_ENDED,
-                    {"action": kwargs.get("action")},
-                    run_id=run_id,
-                    step=state.step_index,
-                    duration_ms=(time.time() - _get_t("t0", **kwargs)) * 1000,
-                )
+            emit_action_planned(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                action=kwargs.get("action"),
             )
         case 6:
-            event_bus.emit(
-                Event(
-                    EventType.ACTION_PLANNED,
-                    {"action": kwargs.get("action")},
-                    run_id=run_id,
-                    step=state.step_index,
-                )
+            emit_action_started(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                action=kwargs.get("action"),
             )
         case 7:
-            result = kwargs.get("result")
-            if not isinstance(result, ToolResult):
-                raise ValueError("Kwargs key 'result' must be type ToolResult!")
-            event_bus.emit(
-                Event(
-                    EventType.ACTION_EXECUTED,
-                    {"success": result.success, "summary": result.summary},
-                    run_id=run_id,
-                    step=state.step_index,
-                    duration_ms=(time.time() - _get_t("t1", **kwargs)) * 1000,
-                )
+            result = _validate_tool_result(kwargs.get("result"))
+            emit_action_finished(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                result=result,
+                t0=kwargs.get("t1"),
             )
         case 8:
-            event_bus.emit(
-                Event(
-                    EventType.VALIDATION_STARTED,
-                    {},
-                    run_id=run_id,
-                    step=state.step_index,
-                )
-            )
+            emit_validation_started(event_bus, run_id=run_id, state=state)
         case 9:
-            validation = kwargs.get("validation")
-            if not isinstance(validation, ValidationResult):
-                raise ValueError("Kwargs key 'result' must be type ToolResult!")
-            event_bus.emit(
-                Event(
-                    EventType.VALIDATION_DONE,
-                    {"status": validation.status, "reason": validation.reason},
-                    run_id=run_id,
-                    step=state.step_index,
-                    duration_ms=(time.time() - _get_t("t2", **kwargs)) * 1000,
-                )
+            validation = _validate_validation_result(kwargs.get("validation"))
+            emit_validation_finished(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                validation=validation,
+                t2=kwargs.get("t2"),
             )
         case 10:
-            event_bus.emit(
-                Event(EventType.AGENT_DONE, {"state": state.as_dict()}, run_id=run_id)
+            emit_agent_done(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                output=str(kwargs.get("output"))
+                if kwargs.get("output") is not None
+                else None,
             )
         case 11:
             exc = kwargs.get("exc")
-            event_bus.emit(
-                Event(
-                    EventType.AGENT_ERROR,
-                    {"query": kwargs.get("query"), "traceback": traceback.format_exc()},
-                    run_id=run_id,
-                    step=getattr(state, "step_index", None),  # type: ignore
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+            if not isinstance(exc, Exception):
+                raise ValueError("Kwarg 'exc' must be an Exception instance.")
+            emit_agent_error(
+                event_bus,
+                run_id=run_id,
+                state=state,
+                query=str(kwargs.get("query", "")),
+                exc=exc,
             )
+        case _:
+            raise ValueError(f"Unknown event id: {id}")

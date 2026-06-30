@@ -82,6 +82,22 @@ def list_models() -> list[Model]:
     return models
 
 
+def resolve_model_path(name: str) -> Path | None:
+    root = get_model_store_dir()
+
+    if not root.exists():
+        return None
+
+    for repo_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        gguf_files = sorted(repo_dir.rglob("*.gguf"))
+
+        for gguf_file in gguf_files:
+            if str(gguf_file.relative_to(repo_dir)) == name:
+                return gguf_file
+
+    return None
+
+
 def search_gguf_models(query: str, limit: int = 20) -> list[Model]:
     """
     Search Hugging Face for models whose repo matches the query and that

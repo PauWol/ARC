@@ -1,4 +1,3 @@
-# llama_runtime.py
 """
 Managed llama-cpp-python runtime.
 
@@ -31,22 +30,15 @@ import logging
 import os
 import time
 import threading
+import psutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any
 from collections.abc import AsyncIterator, Iterator, Sequence
 
-try:
-    import psutil
-except ImportError:
-    psutil = None  # type: ignore
-
 from llama_cpp import Llama, LlamaState
 
 log = logging.getLogger(__name__)
-
-
-# ── Hardware detection ────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -73,13 +65,10 @@ class HardwareProfile:
         physical = logical
         total_ram = free_ram = 0.0
 
-        if psutil is not None:
-            physical = psutil.cpu_count(logical=False) or logical
-            mem = psutil.virtual_memory()
-            total_ram = mem.total / (1024**3)
-            free_ram = mem.available / (1024**3)
-        else:
-            physical = max(logical // 2, 1)
+        physical = psutil.cpu_count(logical=False) or logical
+        mem = psutil.virtual_memory()
+        total_ram = mem.total / (1024**3)
+        free_ram = mem.available / (1024**3)
 
         try:
             from llama_cpp import llama_supports_gpu_offload  # type: ignore
@@ -116,9 +105,6 @@ def hardware() -> HardwareProfile:
     if _HW is None:
         _HW = HardwareProfile.detect()
     return _HW
-
-
-# ── Generation config ─────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -171,9 +157,6 @@ GEN_GREEDY = GenerationConfig(temperature=0.0, top_p=1.0, top_k=1)
 GEN_FAST = GenerationConfig(max_tokens=128, temperature=0.0, top_p=0.1)
 
 
-# ── Model source ──────────────────────────────────────────────────────────────
-
-
 @dataclass(slots=True)
 class ModelSource:
     """
@@ -201,9 +184,6 @@ class ModelSource:
             raise ValueError(
                 "Provide either model_path OR (repo_id + filename), not both/neither."
             )
-
-
-# ── Runtime options ───────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -253,8 +233,6 @@ class RuntimeOptions:
     # Default sampling — used when no GenerationConfig is passed to chat/complete
     default_generation: GenerationConfig = field(default_factory=GenerationConfig)
 
-    # ── factories ─────────────────────────────────────────────────────────────
-
     @classmethod
     def auto(cls, **overrides: Any) -> "RuntimeOptions":
         """Best settings for detected hardware: GPU if available, physical core threads."""
@@ -278,8 +256,6 @@ class RuntimeOptions:
     def cpu_only(cls, **overrides: Any) -> "RuntimeOptions":
         """Force CPU execution regardless of GPU availability."""
         return cls(n_gpu_layers=0, flash_attn=False, **overrides)
-
-    # ── helpers ───────────────────────────────────────────────────────────────
 
     def with_ctx(self, n_ctx: int) -> "RuntimeOptions":
         """Return a copy with a specific context window size."""
@@ -332,9 +308,6 @@ class RuntimeOptions:
         if self.split_mode is not None:
             kwargs["split_mode"] = self.split_mode
         return kwargs
-
-
-# ── LlamaRuntime ──────────────────────────────────────────────────────────────
 
 
 class LlamaRuntime:
@@ -421,8 +394,6 @@ class LlamaRuntime:
         )
         return cls(src, options or RuntimeOptions.auto())
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-
     @property
     def loaded(self) -> bool:
         return self._llm is not None
@@ -494,8 +465,6 @@ class LlamaRuntime:
         except Exception:
             pass
 
-    # ── System-prompt KV caching ──────────────────────────────────────────────
-
     def set_system_prompt(self, content: str) -> None:
         """
         Pre-fill the KV cache with a system prompt and save the state.
@@ -538,13 +507,13 @@ class LlamaRuntime:
             self._sys_cache_content = None
             self._sys_cache_state = None
 
-    # ── Context helpers ───────────────────────────────────────────────────────
-
     def context_window(self) -> int:
+        """Return the context window size."""
         with self._load_lock:
             return self.ensure_loaded().n_ctx()
 
     def count_tokens(self, text: str, add_bos: bool = True) -> int:
+        """Count the amount of tokens that will be used by input :param: text."""
         with self._load_lock:
             return len(self.ensure_loaded().tokenize(text.encode(), add_bos))
 
@@ -581,8 +550,6 @@ class LlamaRuntime:
                 raise ValueError("No saved state available.")
             self.ensure_loaded().load_state(chosen)
             self._touch()
-
-    # ── Generation — sync ─────────────────────────────────────────────────────
 
     def complete(
         self,
@@ -681,8 +648,6 @@ class LlamaRuntime:
             )
         self._touch()
 
-    # ── Generation — async ────────────────────────────────────────────────────
-
     async def acomplete(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Async wrapper for complete()."""
         loop = asyncio.get_running_loop()
@@ -709,15 +674,11 @@ class LlamaRuntime:
         async for chunk in self._bridge_stream(self.stream_chat, messages, **kwargs):
             yield chunk
 
-    # ── Background futures ────────────────────────────────────────────────────
-
     def submit_complete(self, *args: Any, **kwargs: Any) -> Future:
         return self._require_executor().submit(self.complete, *args, **kwargs)
 
     def submit_chat(self, *args: Any, **kwargs: Any) -> Future:
         return self._require_executor().submit(self.chat, *args, **kwargs)
-
-    # ── Diagnostics ───────────────────────────────────────────────────────────
 
     @property
     def last_usage(self) -> dict[str, int] | None:
@@ -740,8 +701,6 @@ class LlamaRuntime:
             info["rss_mb"] = round(proc.memory_info().rss / (1024**2), 1)
             info["cpu_percent"] = proc.cpu_percent(interval=None)
         return info
-
-    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _prepare_inference(self, reset: bool) -> Llama:
         """Load model on demand, optionally reset context, refresh timestamp."""
@@ -866,9 +825,6 @@ class LlamaRuntime:
                     self._infer_lock.release()
 
 
-# ── RuntimePool ───────────────────────────────────────────────────────────────
-
-
 class RuntimePool:
     """
     Manage a collection of named LlamaRuntime instances.
@@ -962,8 +918,6 @@ class RuntimePool:
         with self._lock:
             return [n for n, rt in self._runtimes.items() if rt.loaded]
 
-    # ── Direct dispatch ───────────────────────────────────────────────────────
-
     def chat(
         self,
         name: str,
@@ -1000,8 +954,6 @@ class RuntimePool:
         self._mark_used(name)
         return result
 
-    # ── Bulk operations ───────────────────────────────────────────────────────
-
     def unload_all(self) -> None:
         """Unload all models (runtimes remain registered and can reload)."""
         with self._lock:
@@ -1037,8 +989,6 @@ class RuntimePool:
 
     def __exit__(self, *_: Any) -> None:
         self.close_all()
-
-    # ── LRU eviction ─────────────────────────────────────────────────────────
 
     def _ensure_capacity(self, name: str) -> None:
         """

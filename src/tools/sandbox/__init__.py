@@ -1,23 +1,33 @@
+from __future__ import annotations
+
 from src.tools.sandbox.runner import run_python
-from src.tools.registry import ToolResult
+from src.schema import ToolResult
+from src.tools.sandbox.policy import SandboxPolicy
 
 
-def run_python_file(file_path: str):
+def run_python_file(file_path: str, policy: SandboxPolicy | None = None) -> ToolResult:
+    """
+    Read *file_path* and execute its contents in the Python sandbox.
+
+    Parameters
+    ----------
+    file_path:
+        Path to the ``.py`` file to run.
+    policy:
+        Optional :class:`~policy.SandboxPolicy`.  When *None* the runner
+        falls back to :data:`~policy.DEFAULT_POLICY` (or the env-var
+        override).
+    """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
+    except Exception as exc:
+        return ToolResult(False, f"error: {str(exc)[:200]}", {"error": str(exc)})
 
-    except Exception as e:
-        return ToolResult(False, f"error: {str(e)[:200]}", {"error": e})
+    result = run_python(text, policy=policy)
 
-    r = run_python(text)
+    summary = "running python file code failed"
+    if result.success:
+        summary = "ran python file code successfully"
 
-    s = "running python file code failed"
-
-    if r.success:
-        s = "ran python file code successfully"
-
-    return ToolResult(r.success, s, r.data)
-
-
-__all__ = ["run_python", "run_python_file"]
+    return ToolResult(result.success, summary, result.data)

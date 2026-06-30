@@ -1,156 +1,94 @@
-from __future__ import annotations
-
 import json
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Optional
+from typing import Literal
 
 from src.llama_runtime import LlamaRuntime
 from src.memory import AgentState
-from src.tools.registry import ToolResult, Artifact
-from src.assets import json_grammar
+from src.roles.base import BaseRole
+from src.schema import ToolResult
+from src.roles.planner import Plan
 
 
 VALIDATE_PROMPT = """
-You are the validator of an agent system.
+ROLE: task validator
 
-Your job:
-- inspect the latest tool result and current state
-- decide whether the task is complete
-- decide whether the planner should replan
-- do NOT choose the next tool directly
+TASK:
+Decide the current status of the task using the latest result, state, and artifacts.
 
-Return ONLY valid JSON in this exact shape:
-{
-  "done": false,
-  "status": "continue|replan|present|complete",
-  "reason": "short reason",
-  "missing": ["short item"],
-  "needs_presentation": false
-}
+RULES:
+- Use only provided information
+- Focus on whether the result completes the task goal
+- If tool failed or is unknown → replan
+- Prefer marking done only when clearly complete
 
-Rules:
-- done=true only if the task is fully complete
-- use "present" when the result is ready for final user output but not yet presented
-- use "replan" when the current path failed or is insufficient
-- use "continue" when more work is needed
-- keep reason under 12 words
-- max 3 missing items
-- no explanations outside JSON
-- If last_success is false, status must be "replan"
-- If the last_result contains "unknown tool", status must be "replan"
-- Do not call a failed or unknown tool "continue" or "complete"
-- done=true only if the task is fully complete
+STATUS:
+- done: task is complete
+- present: output is ready for user
+- continue: more work needed
+- replan: change approach needed
 """
 
 
 @dataclass(slots=True)
 class ValidationResult:
-    done: bool = False
-    status: str = "continue"
-    reason: str = ""
-    missing: list[str] = field(default_factory=list)
-    needs_presentation: bool = False
+    status: Literal["done", "present", "continue", "replan"]
+    reason: str
+    missing: Optional[list[str]] = None
+
+    def __post_init__(self):
+        if self.missing is None:
+            self.missing = []
 
 
-def parse_validation(content: str) -> ValidationResult:
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        return ValidationResult(
-            done=False,
-            status="replan",
-            reason="invalid validator output",
-        )
+class Validator(BaseRole[ValidationResult]):
+    system_prompt = VALIDATE_PROMPT
+    output_schema = ValidationResult
 
-    done = bool(data.get("done", False))
-    status = str(data.get("status", "continue")).strip().lower()
-    reason = str(data.get("reason", "")).strip()[:120]
-    needs_presentation = bool(data.get("needs_presentation", False))
+    def __init__(
+        self, runtime: LlamaRuntime, tokens: int = 100, temperature: float = 0
+    ) -> None:
+        super().__init__(runtime, tokens, temperature)
 
-    if status not in {"continue", "replan", "present", "complete"}:
-        status = "replan"
 
-    missing_raw = data.get("missing", [])
-    missing: list[str] = []
-    if isinstance(missing_raw, list):
-        for item in missing_raw[:3]:
-            value = str(item).strip()
-            if value:
-                missing.append(value[:80])
-
-    return ValidationResult(
-        done=done,
-        status=status,
-        reason=reason,
-        missing=missing,
-        needs_presentation=needs_presentation,
+def build_validator_prompt(state: AgentState, result: ToolResult, plan: Plan) -> str:
+    artifact_block = (
+        [
+            {
+                "type": a.type,
+                "name": a.name,
+                "description": a.description,
+                "tags": a.tags[:4] if a.tags else [],
+                "path": a.path,
+            }
+            for a in result.artifacts
+        ]
+        if result.artifacts
+        else "No artifacts returned"
     )
 
+    return f"""
+GOAL:
+{state.intent or state.cleaned_input or state.raw_input}
 
-def _artifact_block(artifacts: list[Artifact]) -> str:
-    if not artifacts:
-        return "none"
+STATE:
+status: {state.status}
+step_index: {state.step_index}
+error: {state.error or ""}
 
-    lines: list[str] = []
-    for art in artifacts[-5:]:
-        lines.append(
-            f"- {art.type}: {art.name} | {art.description} | {art.path or 'inline'}"
-        )
-    return "\n".join(lines)
+CONTEXT:
+{state.compact_prompt()}
 
+LAST_ACTION:
+tool: {plan.tool}
+reason: {plan.reason}
+input: {json.dumps(plan.input, ensure_ascii=False, separators=(",", ":"))}
 
-def validate(
-    runtime: LlamaRuntime,
-    state: AgentState,
-    action: dict[str, Any],
-    result: ToolResult,
-    artifacts: list[Artifact],
-    fast_path_enabled: bool = True,
-) -> tuple[ValidationResult, Literal[True]] | tuple[ValidationResult, Literal[False]]:
-    """
-    Validate the latest step without choosing the next tool.
-    """
-    tool_name = str(action.get("tool", "")).strip()
+LAST_RESULT:
+success: {str(result.success).lower()}
+summary: {result.summary}
+data: {json.dumps(result.data, ensure_ascii=False, separators=(",", ":"))}
 
-    if fast_path_enabled:
-        if not result.success:
-            summary = (result.summary or "").lower()
-
-            if "unknown tool" in summary:
-                return ValidationResult(
-                    done=False,
-                    status="replan",
-                    reason="unknown tool",
-                    missing=[f"use a registered tool instead of {tool_name}"],
-                ), True
-
-            return ValidationResult(
-                done=False,
-                status="replan",
-                reason="tool failed",
-                missing=["fix tool call", "retry with valid input"],
-            ), True
-
-    prompt = (
-        f"{state.compact_prompt()}\n\n"
-        f"last_action: {action.get('tool', '')}\n"
-        f"last_reason: {action.get('reason', '')}\n"
-        f"last_result: {result.summary}\n"
-        f"last_success: {result.success}\n\n"
-        f"artifacts:\n{_artifact_block(artifacts)}"
-    )
-
-    response = runtime.chat(
-        messages=[
-            {"role": "system", "content": VALIDATE_PROMPT.strip()},
-            {"role": "user", "content": prompt},
-        ],
-        grammar=json_grammar(),
-        temperature=0.0,
-        top_p=0.1,
-        max_tokens=100,
-        reset=True,
-    )
-
-    content = response["choices"][0]["message"]["content"]
-    return parse_validation(content), False
+RESULT_ARTIFACTS:
+{json.dumps(artifact_block, ensure_ascii=False, indent=2)}
+"""

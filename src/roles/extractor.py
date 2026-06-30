@@ -1,29 +1,26 @@
-from __future__ import annotations
-
-import json
 from dataclasses import dataclass, field
 from src.llama_runtime import LlamaRuntime
-from src.assets import json_grammar
-
+from src.roles.base import BaseRole
 
 EXTRACT_PROMPT = """
+ROLE: intent extractor
+
+TASK: 
 Extract the user's task intent and goals.
+Identify what the user wants to achieve and break it into structured intent.
 
-Return ONLY valid JSON in this exact shape:
-{
-  "intent": "short imperative sentence",
-  "goals": ["short goal", "short goal"]
-}
-
-Rules:
+RULES:
 - intent max 12 words
 - goals max 5 items
-- goals max 6 words each
-- concise
+- each goal max 6 words
+- be concise
 - no explanations
+- no extra text outside JSON
+- Never invent intent or goals
+- Facts only
 """
 
-INPUT_TOKEN_THRESHOLD = 300
+INPUT_TOKEN_THRESHOLD = 150  # 300
 
 
 @dataclass(slots=True)
@@ -32,49 +29,21 @@ class ExtractedTask:
     goals: list[str] = field(default_factory=list[str])
 
 
-class TaskExtractor:
-    """Tiny structured extractor for intent and goals."""
+class TaskExtractor(BaseRole[ExtractedTask]):
+    output_schema = ExtractedTask
+    system_prompt: str = EXTRACT_PROMPT
 
-    def __init__(self, runtime: LlamaRuntime):
-        self.runtime: LlamaRuntime = runtime
+    def __init__(
+        self, runtime: LlamaRuntime, tokens: int = 150, temperature: float = 0
+    ) -> None:
+        super().__init__(runtime, tokens, temperature)
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
         return len(text) // 4
 
-    def extract(self, text: str) -> ExtractedTask:
-        """Extract intent and goals from user input."""
+    async def run(self, query: str):
+        if self.estimate_tokens(query) < INPUT_TOKEN_THRESHOLD:
+            return ExtractedTask(intent=query)
 
-        if self.estimate_tokens(text) < INPUT_TOKEN_THRESHOLD:
-            return ExtractedTask(intent=text)
-
-        response = self.runtime.chat(
-            messages=[
-                {"role": "system", "content": EXTRACT_PROMPT.strip()},
-                {"role": "user", "content": text},
-            ],
-            grammar=json_grammar(),
-            temperature=0.0,
-            top_p=0.1,
-            max_tokens=120,
-            reset=True,
-        )
-
-        content: str = response["choices"][0]["message"]["content"]
-
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            return ExtractedTask()
-
-        intent: str = str(data.get("intent", "")).strip()
-        goals_raw: str = data.get("goals", [])
-
-        goals: list[str] = []
-        if isinstance(goals_raw, list):
-            for item in goals_raw[:5]:
-                value = str(item).strip()
-                if value:
-                    goals.append(value[:60])
-
-        return ExtractedTask(intent=intent[:120], goals=goals)
+        return await super().run(query)
