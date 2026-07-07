@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
+import difflib
 import time
 from typing import Callable
 import uuid
+import logging
 
 from src.llama_runtime import LlamaRuntime
 
@@ -40,7 +42,66 @@ from src.events import (
     emit_tool_error,
     emit_validation_finished,
     emit_validation_started,
+    emit_reasoning_started,
+    emit_reasoning_chunk,
+    emit_reasoning_finished,
 )
+
+# Common near-misses a model reaches for that don't match a registered tool
+# name verbatim (e.g. planner prompts mentioning "bash" informally while the
+# actual registered tool is "run_bash"). Extend as you add/rename tools.
+TOOL_ALIASES: dict[str, str] = {
+    "bash": "run_bash",
+    "shell": "run_bash",
+    "sh": "run_bash",
+    "python": "execute_python",
+    "py": "execute_python",
+    "exec": "execute_python",
+    "read": "read_file",
+    "cat": "read_file",
+    "write": "write_file",
+    "save": "write_file",
+}
+
+logger = logging.getLogger("agent")
+
+class ReasoningHook:
+    """
+    Bridges BaseRole's reasoning stream to the Agent's event bus so a UI can
+    render "thinking..." live. One instance per role; reads run_id/state off
+    the Agent at call time since those change every run() but the role
+    instances (and therefore their hooks) are constructed once in __init__.
+    """
+
+    def __init__(self, agent: "Agent", role: str) -> None:
+        self._agent = agent
+        self._role = role
+
+    def start(self) -> None:
+        emit_reasoning_started(
+            self._agent.event_bus,
+            run_id=self._agent._current_run_id,
+            state=self._agent.state,
+            role=self._role,
+        )
+
+    def chunk(self, text: str) -> None:
+        emit_reasoning_chunk(
+            self._agent.event_bus,
+            run_id=self._agent._current_run_id,
+            state=self._agent.state,
+            role=self._role,
+            chunk=text,
+        )
+
+    def finish(self, full_text: str) -> None:
+        emit_reasoning_finished(
+            self._agent.event_bus,
+            run_id=self._agent._current_run_id,
+            state=self._agent.state,
+            role=self._role,
+            reasoning=full_text,
+        )
 
 
 @dataclass(slots=True)
@@ -86,18 +147,24 @@ class Agent(LlamaRuntime):
         self.event_bus: EventBus = EventBus()
 
         self._extractor = TaskExtractor(self)
-        self._planner = Planner(self, config.tools)
+        self._planner = Planner(
+            self, config.tools, reasoning_hook=ReasoningHook(self, "planner")  # pyright: ignore[reportCallIssue]
+        )
         self._validator = Validator(self)
         self._synth = Synthesizer(self)
+        # Note: self.state/self._current_run_id aren't set until run() starts;
+        # ReasoningHook reads them lazily at call time so construction order
+        # here doesn't matter. To get the same live "thinking..." visibility
+        # for extractor/validator/synth, add a `reasoning_hook` param to
+        # their constructors the same way Planner does and pass
+        # ReasoningHook(self, "<role>") here.
 
         if len(config.tools) != 0:
-            print(f"[DEBUG] Following Tools are used: {config.tools}")
+            logger.debug(f"Following Tools are used: {config.tools}")
         else:
-            print("[DEBUG] Attention no tools provided.")
+            logger.warning(" Attention no tools provided.")
 
         self._tool_map = self._build_tool_map(config.tools)
-
-        print(self._tool_map)
 
     def _build_tool_map(self, tools: list[Callable]):
         return {
@@ -105,16 +172,37 @@ class Agent(LlamaRuntime):
             for tool in tools
         }
 
-    def _is_tool(self, name: str):
-        if not self._tool_map:
-            return False
+    def _resolve_tool_name(self, name: str) -> str | None:
+        """
+        Resolve a planner-provided tool name to a registered tool-map key.
 
-        return name in self._tool_map.keys()
+        Tries, in order: exact match -> known alias (TOOL_ALIASES) -> fuzzy
+        match against registered names. The fuzzy step exists because grammar-
+        constrained decoding guarantees valid JSON syntax, not that the "tool"
+        string exactly matches a registered name — models reach for the
+        colloquial name ("bash") over the registered one ("run_bash") more
+        often than you'd expect. Returns None if nothing reasonable matches.
+        """
+        if not self._tool_map:
+            return None
+        if name in self._tool_map:
+            return name
+
+        alias = TOOL_ALIASES.get(name)
+        if alias and alias in self._tool_map:
+            return alias
+
+        close = difflib.get_close_matches(
+            name, self._tool_map.keys(), n=1, cutoff=0.6
+        )
+        return close[0] if close else None
+
+    def _is_tool(self, name: str):
+        return self._resolve_tool_name(name) is not None
 
     def _get_tool(self, name: str):
-        if self._tool_map:
-            return self._tool_map.get(name)
-        return None
+        resolved = self._resolve_tool_name(name)
+        return self._tool_map.get(resolved) if resolved else None
 
     def _stop_condition(self) -> bool:
         if self.state.is_done:
@@ -151,9 +239,15 @@ class Agent(LlamaRuntime):
 
     async def act(self, plan: Plan, state: AgentState) -> ToolResult:
         """Execute the plan step produced by the planner."""
-        tool_name = str(plan.tool).lower().strip()
+        raw_tool_name = str(plan.tool).lower().strip()
         tool_input = plan.input if isinstance(plan.input, dict) else {}
-        tool = self._get_tool(tool_name)
+        resolved_name = self._resolve_tool_name(raw_tool_name)
+        tool_name = resolved_name or raw_tool_name
+        tool = self._tool_map.get(resolved_name) if resolved_name else None
+
+        if resolved_name and resolved_name != raw_tool_name:
+            state.remember_fact(f"tool_name_resolved:{raw_tool_name} -> {resolved_name}")
+            print(f"[resolved tool name] '{raw_tool_name}' -> '{resolved_name}'")
 
         print(f"{tool_name}({tool_input})")
 

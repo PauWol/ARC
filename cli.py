@@ -1,10 +1,10 @@
 # main.py
 import typer
 from rich.traceback import install
-from src.ui.commands.run import run
-from src.ui.theme import console, arc_rule, arc_panel, arc_status
-from src.ui.commands.doctor import doctor
-from src.ui.commands.models import app as models_app
+from src.cli.commands.run import run
+from src.cli.theme import console, arc_rule, arc_panel, arc_status
+from src.cli.commands.doctor import doctor
+from src.cli.commands.models import app as models_app
 
 install(show_locals=False)
 

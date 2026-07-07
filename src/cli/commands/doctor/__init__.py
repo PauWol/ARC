@@ -4,8 +4,8 @@ import questionary
 from rich.console import Console
 from rich.table import Table
 
-from src.ui.types import DoctorCheck
-from src.ui.commands.doctor.env import env_check, fix_env
+from src.cli.types import DoctorCheck
+from src.cli.commands.doctor.env import env_check, fix_env
 
 console = Console()
 

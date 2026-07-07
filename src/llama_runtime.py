@@ -74,7 +74,7 @@ class HardwareProfile:
             from llama_cpp import llama_supports_gpu_offload  # type: ignore
 
             gpu = llama_supports_gpu_offload()
-        except ImportError, AttributeError:
+        except (ImportError, AttributeError):
             gpu = False
 
         profile = cls(
@@ -172,6 +172,9 @@ class ModelSource:
     additional_files: list[str] = field(default_factory=list)
     local_dir: str | None = None
     cache_dir: str | None = None
+    # Manual override for model-family auto-detection (see src.models.profiles).
+    # Leave as None to let detect_profile() fingerprint path/repo_id/filename.
+    family: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -363,6 +366,21 @@ class LlamaRuntime:
                 daemon=True,
             )
             self._idle_thread.start()
+
+        self._profile = None  # lazily resolved, see .profile
+
+    @property
+    def profile(self):
+        """
+        Model-family profile (thinking/non-thinking, sampling defaults,
+        system-role support, grammar safety). Resolved once and cached;
+        set self.source.family to override auto-detection.
+        """
+        if self._profile is None:
+            from src.profiles import detect_profile
+
+            self._profile = detect_profile(self.source, override=self.source.family)
+        return self._profile
 
     # ── Constructors ──────────────────────────────────────────────────────────
 

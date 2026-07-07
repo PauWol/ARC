@@ -1,0 +1,5 @@
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi       8.5Gi       1.6Gi       1.6Gi       7.3Gi       6.8Gi
+Swap:           15Gi       2.4Mi        15Gi
+---
+Linux cachyos-x8664 7.0.12-1-cachyos #1 SMP PREEMPT_DYNAMIC Sat, 13 Jun 2026 11:49:00 +0000 x86_64 GNU/Linux

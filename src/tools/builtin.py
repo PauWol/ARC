@@ -80,7 +80,6 @@ async def write_file(path: str, content: str) -> ToolResult:
     except Exception as exc:
         return ToolResult(success=False, summary=f"write_file failed: {exc}")
 
-
 # ── Python execution ──────────────────────────────────────────────────────────
 
 

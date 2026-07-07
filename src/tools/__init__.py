@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, get_args, get_origin, get_type_hints
 
+from . import policy
+
 import inspect
 import re
 

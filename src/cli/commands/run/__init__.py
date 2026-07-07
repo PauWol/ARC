@@ -5,12 +5,14 @@ import questionary
 import typer
 from rich import box
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from src.agent import Agent, AgentConfig
 from src.events import Event, EventType
-from src.ui.theme import arc_status
+from src.cli.theme import arc_status
 from src.util.models import list_models, resolve_model_path
 
 console = Console()
@@ -42,6 +44,9 @@ EVENT_AGENT_ERROR = _event_type("AGENT_ERROR")
 EVENT_TOOL_ERROR = _event_type("TOOL_ERROR")
 EVENT_WARNING = _event_type("WARNING")
 EVENT_MEMORY_UPDATED = _event_type("MEMORY_UPDATED")
+EVENT_REASONING_STARTED = _event_type("REASONING_STARTED")
+EVENT_REASONING_CHUNK = _event_type("REASONING_CHUNK")
+EVENT_REASONING_FINISHED = _event_type("REASONING_FINISHED")
 
 
 def _is_event_type(event: Event, *candidates: Any) -> bool:
@@ -191,6 +196,23 @@ def _validation_color(status: str) -> str:
 
 
 def build_cli_event_handler(*, debug: bool = False) -> Callable[[Event], None]:
+    # Live-updating "thinking..." panels, keyed by (run_id, role) so multiple
+    # roles (or overlapping runs, in theory) don't clobber each other's
+    # display. REASONING_CHUNK events arrive one token at a time; batching
+    # them all into a single Panel re-render via Live avoids flooding the
+    # terminal with one panel per token.
+    reasoning_live: dict[tuple[str, str], Live] = {}
+    reasoning_text: dict[tuple[str, str], str] = {}
+
+    def _reasoning_panel(role: str, text: str, *, done: bool) -> Panel:
+        body = text.strip() or "…"
+        label = role.capitalize() if role else "Model"
+        return Panel(
+            Text(body, style="italic" if done else "dim italic"),
+            title=f"{label} reasoning" if done else f"{label} is thinking…",
+            border_style="dim magenta" if done else "magenta",
+        )
+
     def cli_event_handler(event: Event) -> None:
         title_suffix = f" · step {event.step}" if event.step is not None else ""
         debug_rows = []
@@ -274,6 +296,52 @@ def build_cli_event_handler(*, debug: bool = False) -> Callable[[Event], None]:
                 *debug_rows,
             ]
             _panel(f"Thinking started{title_suffix}", "yellow", rows)
+            return
+
+        if _is_event_type(event, EVENT_REASONING_STARTED):
+            role = event.payload.get("role", "model")
+            key = (event.run_id, role)
+            old = reasoning_live.pop(key, None)
+            if old is not None:
+                old.stop()  # defensive: a prior pass on this key never finished
+            reasoning_text[key] = ""
+            live = Live(
+                _reasoning_panel(role, "", done=False),
+                console=console,
+                refresh_per_second=12,
+            )
+            live.start()
+            reasoning_live[key] = live
+            return
+
+        if _is_event_type(event, EVENT_REASONING_CHUNK):
+            role = event.payload.get("role", "model")
+            key = (event.run_id, role)
+            reasoning_text[key] = reasoning_text.get(key, "") + event.payload.get(
+                "chunk", ""
+            )
+            live = reasoning_live.get(key)
+            if live is not None:
+                live.update(_reasoning_panel(role, reasoning_text[key], done=False))
+            return
+
+        if _is_event_type(event, EVENT_REASONING_FINISHED):
+            role = event.payload.get("role", "model")
+            key = (event.run_id, role)
+            full = event.payload.get("reasoning", reasoning_text.get(key, ""))
+            live = reasoning_live.pop(key, None)
+            reasoning_text.pop(key, None)
+            if live is not None:
+                live.update(_reasoning_panel(role, full, done=True))
+                live.stop()
+            else:
+                # No STARTED/CHUNK events were seen for this key (e.g. handler
+                # subscribed mid-run) — fall back to a plain panel.
+                _panel(
+                    f"{role.capitalize()} reasoning{title_suffix}",
+                    "magenta",
+                    [("Reasoning", _short(full, 600)), *debug_rows],
+                )
             return
 
         if _is_event_type(event, EVENT_THINKING_ENDED):

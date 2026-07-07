@@ -30,6 +30,9 @@ class EventType(Enum):
     AGENT_ERROR = auto()
     TOOL_ERROR = auto()
     WARNING = auto()
+    REASONING_STARTED = auto()
+    REASONING_CHUNK = auto()
+    REASONING_FINISHED = auto()
 
 
 @dataclass(slots=True)
@@ -335,6 +338,51 @@ def emit_synthesis_finished(
         payload={
             "output": output,
             "output_len": len(output),
+        },
+    )
+
+
+def emit_reasoning_started(
+    event_bus: EventBus, *, run_id: str, state: AgentState, role: str
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.REASONING_STARTED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={"role": role},
+    )
+
+
+def emit_reasoning_chunk(
+    event_bus: EventBus, *, run_id: str, state: AgentState, role: str, chunk: str
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.REASONING_CHUNK,
+        run_id=run_id,
+        step=state.step_index,
+        payload={"role": role, "chunk": chunk},
+    )
+
+
+def emit_reasoning_finished(
+    event_bus: EventBus,
+    *,
+    run_id: str,
+    state: AgentState,
+    role: str,
+    reasoning: str,
+) -> None:
+    emit_event(
+        event_bus,
+        EventType.REASONING_FINISHED,
+        run_id=run_id,
+        step=state.step_index,
+        payload={
+            "role": role,
+            "reasoning": reasoning,
+            "reasoning_len": len(reasoning),
         },
     )
 
