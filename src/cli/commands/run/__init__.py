@@ -668,7 +668,7 @@ async def _run(query: str, model: str, *, debug: bool = False):
             console.print(f"[red]Model '{model}' not found.[/red]")
             raise typer.Exit(1)
 
-        conf = AgentConfig.from_path_with_default_tools(str(model_path))
+        conf = AgentConfig.from_path(str(model_path))
         agent = Agent(conf)
 
         agent.event_bus.subscribe(build_cli_event_handler(debug=debug))

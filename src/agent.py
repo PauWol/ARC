@@ -114,8 +114,9 @@ class AgentConfig:
         default_factory=lambda: SandboxPolicy.default()
     )
     name: str = "Agent"
-    system_prompt: str = "You are a helpful AI assistant."
+    system_prompt_addition: str = "You are a helpful AI assistant."
     tools: list[Callable] = field(default_factory=list)
+    builtin_tools: bool = True
     memory: bool = False
     max_iterations: int = 10
     max_replan: int = 3
@@ -124,18 +125,6 @@ class AgentConfig:
     @classmethod
     def from_path(cls, path: str, **kwargs):
         return cls(ModelSource(path), **kwargs)
-
-    @classmethod
-    def from_path_with_default_tools(
-        cls, path: str, sandbox_policy=SandboxPolicy.default(), **kwargs
-    ):
-        return cls(
-            ModelSource(path),
-            sandbox_policy=sandbox_policy,
-            tools=make_builtin_tools(sandbox_policy),
-            **kwargs,
-        )
-
 
 class Agent(LlamaRuntime):
     def __init__(
@@ -146,6 +135,7 @@ class Agent(LlamaRuntime):
         self._config = config
         self.event_bus: EventBus = EventBus()
 
+        self._config.tools =make_builtin_tools(self,self._config.sandbox_policy)
         self._extractor = TaskExtractor(self)
         self._planner = Planner(
             self, config.tools, reasoning_hook=ReasoningHook(self, "planner")  # pyright: ignore[reportCallIssue]
@@ -171,7 +161,7 @@ class Agent(LlamaRuntime):
             getattr(tool, "__name__", tool.__class__.__name__).lower(): tool
             for tool in tools
         }
-
+    
     def _resolve_tool_name(self, name: str) -> str | None:
         """
         Resolve a planner-provided tool name to a registered tool-map key.
@@ -197,12 +187,6 @@ class Agent(LlamaRuntime):
         )
         return close[0] if close else None
 
-    def _is_tool(self, name: str):
-        return self._resolve_tool_name(name) is not None
-
-    def _get_tool(self, name: str):
-        resolved = self._resolve_tool_name(name)
-        return self._tool_map.get(resolved) if resolved else None
 
     def _stop_condition(self) -> bool:
         if self.state.is_done:
@@ -237,65 +221,73 @@ class Agent(LlamaRuntime):
 
         return base
 
-    async def act(self, plan: Plan, state: AgentState) -> ToolResult:
-        """Execute the plan step produced by the planner."""
-        raw_tool_name = str(plan.tool).lower().strip()
-        tool_input = plan.input if isinstance(plan.input, dict) else {}
-        resolved_name = self._resolve_tool_name(raw_tool_name)
-        tool_name = resolved_name or raw_tool_name
-        tool = self._tool_map.get(resolved_name) if resolved_name else None
+    def _save_get_tool(self,plan:Plan):
+        """
+        Get the tool and its input from Plan.
+        Register Error with correction hint when tool not found directly.
 
-        if resolved_name and resolved_name != raw_tool_name:
-            state.remember_fact(f"tool_name_resolved:{raw_tool_name} -> {resolved_name}")
-            print(f"[resolved tool name] '{raw_tool_name}' -> '{resolved_name}'")
+        :returns: The Tool (Callable) and its input (dict) and the raw tool name
+        """
+        _raw_name = str(plan.tool).lower().strip()
 
-        print(f"{tool_name}({tool_input})")
+        _tool_map = self._tool_map
+        if not _tool_map or not _raw_name in _tool_map:
+            _res_name = self._resolve_tool_name(_raw_name)
+            self.state.remember_error(f"unknown_tool:{_raw_name} -> might be {_res_name}")
+            return None, {}, _raw_name
+    
+        _tool_inp = plan.input if isinstance(plan.input, dict) else {}
+        _tool = _tool_map.get(_raw_name)
 
-        if tool is None:
-            error = ValueError(f"unknown tool: {tool_name}")
-            state.remember_error(f"unknown_tool:{tool_name}")
+        return _tool, _tool_inp, _raw_name
+
+    async def act(self, plan: Plan) -> ToolResult:
+        """Execute the plan step produced by the planner."""        
+        _tool, _tool_inp, _raw_tool_name = self._save_get_tool(plan) 
+
+        if _tool is None:
             emit_tool_error(
                 self.event_bus,
                 run_id=self._current_run_id,
-                state=state,
-                tool_name=tool_name,
-                exc=error,
+                state=self.state,
+                tool_name=_raw_tool_name,
+                exc=ValueError(f"unknown tool: {_raw_tool_name}"),
             )  # type: ignore[attr-defined]
-            return ToolResult(success=False, summary=f"unknown tool: {tool_name}")
+            return ToolResult(success=False, summary=f"unknown tool: {_raw_tool_name}")
 
         try:
-            result = await tool(**tool_input)
-            tool_result_validator(result, tool_name)
+            result = await _tool(**_tool_inp)
+            tool_result_validator(result, _raw_tool_name)
         except Exception as exc:
-            state.remember_error(
-                f"tool_failed:{tool_name} | {type(exc).__name__}: {exc}"
+            self.state.remember_error(
+                f"tool_failed:{_raw_tool_name} | {type(exc).__name__}: {exc}"
             )
             emit_tool_error(
                 self.event_bus,
                 run_id=self._current_run_id,  # type: ignore[attr-defined]
-                state=state,
-                tool_name=tool_name,
+                state=self.state,
+                tool_name=_raw_tool_name,
                 exc=exc,
             )
             return ToolResult(
                 success=False,
-                summary=f"tool {tool_name} raised {type(exc).__name__}: {exc}",
+                summary=f"tool {_raw_tool_name} raised {type(exc).__name__}: {exc}",
             )
 
-        state.remember_fact(f"tool_success:{tool_name} | {tool_input}")
+        self.state.remember_fact(f"tool_success:{_raw_tool_name} | {_tool_inp}")
 
         if getattr(result, "summary", None) and getattr(result, "data", None):
-            state.remember_result(
-                f"tool_result:{tool_name} | {result.summary} | {result.data}"
+            self.state.remember_result(
+                f"tool_result:{_raw_tool_name} | {result.summary} | {result.data}"
             )
         elif getattr(result, "summary", None):
-            state.remember_result(f"tool_result:{tool_name} | {result.summary}")
+            self.state.remember_result(f"tool_result:{_raw_tool_name} | {result.summary}")
 
         arts = list(getattr(result, "artifacts", []) or [])
         if arts:
-            state.extend_artifacts(arts)
-            state.remember(
-                f"artifacts_{state.step_index}",
+            self.state.extend_artifacts(arts)
+            self.state.remember(
+                f"artifacts_{self.state.step_index}",
                 [a.name for a in arts],
             )
 
@@ -314,7 +306,6 @@ class Agent(LlamaRuntime):
             state=self.state,
             output=synth_output,
         )
-        print(synth_output)
         return synth_output
 
     async def run(self, query: str):
@@ -393,7 +384,7 @@ class Agent(LlamaRuntime):
                 )
                 t1 = time.time()
 
-                result = await self.act(_plan, self.state)
+                result = await self.act(_plan)
 
                 emit_action_finished(
                     event_bus,

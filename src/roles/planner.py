@@ -5,7 +5,7 @@ from src.llama_runtime import LlamaRuntime
 from src.roles.base import BaseRole, ReasoningMode, ReasoningSink
 from src.tools import ToolPromptGenerator
 
-ACTION_PROMPT = """
+PLANNER_PROMPT = """
 ROLE: planner
 
 TASK:
@@ -43,7 +43,7 @@ class Plan:
 
 class Planner(BaseRole[Plan]):
     output_schema = Plan
-    system_prompt: str = ACTION_PROMPT
+    system_prompt: str = PLANNER_PROMPT
 
     def __init__(
         self,
@@ -51,6 +51,7 @@ class Planner(BaseRole[Plan]):
         tools: list[Callable],
         tokens: int = 500,
         temperature: float = 0,
+        system_prompt_addition: str = "",
         # Planning quality benefits from an explicit reasoning pass even on
         # non-thinking models — default "on" rather than "auto" here.
         # Pass reasoning="auto" instead if you'd rather it track whatever
@@ -70,7 +71,7 @@ class Planner(BaseRole[Plan]):
             for t in tools
             if _takes_no_required_args(t)
         }
-
+        self.system_prompt_addition = system_prompt_addition
         super().__init__(
             runtime,
             tokens,
@@ -81,6 +82,9 @@ class Planner(BaseRole[Plan]):
             reasoning_hook=reasoning_hook,
             role_name="planner",
         )
+
+    def build_system_prompt(self, optional_append: str = "") -> str:
+        return super().build_system_prompt(optional_append+self.system_prompt_addition)
 
     def _validate(self, plan: Plan) -> str | None:
         tool = str(plan.tool).strip().lower()

@@ -165,9 +165,24 @@ class BaseRole(Generic[T]):
         ENFORCEMENT:
         If unsure → still output best-effort valid JSON
         If schema conflicts → follow EXPECTED_SCHEMA strictly
-        """
+        """.strip()
         return p
 
+    def build_reasoning_prompt(self,optional_append: str = ""):
+        base = self.system_prompt.strip()
+        tool_block = self._tool_gen.build_prompt()
+
+        p = f"""
+        SYSTEM:
+        {base}
+
+        {optional_append}
+
+        {tool_block}
+
+        {REASON_PROMPT_SUFFIX}
+        """.strip()
+        return p
     def parse_content(self, content: str) -> T:
         data = json.loads(content)
         schema_cls = cast(type, self.output_schema)
@@ -288,7 +303,7 @@ class BaseRole(Generic[T]):
         Returns the reasoning text with any <think>...</think> wrapper
         stripped (the wrapper itself is model-specific chrome, not content).
         """
-        reason_system = f"{self.system_prompt.strip()}\n{REASON_PROMPT_SUFFIX}"
+        reason_system = self.build_reasoning_prompt()
         cfg = profile.reasoning_sampling.merge(max_tokens=self._reasoning_tokens)
 
         hook = self._reasoning_hook
