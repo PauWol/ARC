@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
-from src.llama_runtime import LlamaRuntime
-from src.types import BaseRole
+from src.agent.llama_runtime import LlamaRuntime
+from src.agent.types import BaseRole
+
+from src.constants import EXTRACTOR_INPUT_TOKEN_THRESHOLD
 
 EXTRACT_PROMPT = """
 ROLE: intent extractor
@@ -19,8 +21,6 @@ RULES:
 - Never invent intent or goals
 - Facts only
 """
-
-INPUT_TOKEN_THRESHOLD = 150  # 300
 
 
 @dataclass(slots=True)
@@ -43,7 +43,7 @@ class TaskExtractor(BaseRole[ExtractedTask]):
         return len(text) // 4
 
     async def run(self, query: str):
-        if self.estimate_tokens(query) < INPUT_TOKEN_THRESHOLD:
+        if self.estimate_tokens(query) < int(EXTRACTOR_INPUT_TOKEN_THRESHOLD):  # pyright: ignore[reportArgumentType]
             return ExtractedTask(intent=query)
 
         return await super().run(query)

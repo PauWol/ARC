@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from enum import Flag, auto
 
+from src.constants import SANDBOX_ALLOW, SANDBOX_CONFIRM
+
 
 class Permission(Flag):
     """
@@ -157,11 +159,9 @@ def policy_from_env() -> SandboxPolicy:
         explicit confirmation before execution.
         Default: ``DELETE,SYSTEM,INSTALL``
     """
-    allow_raw = os.environ.get("SANDBOX_ALLOW", "READ,WRITE,EXECUTE")
-    confirm_raw = os.environ.get("SANDBOX_CONFIRM", "DELETE,SYSTEM,INSTALL")
     return SandboxPolicy(
-        allow=_parse_permissions(allow_raw),
-        require_confirmation=_parse_permissions(confirm_raw),
+        allow=_parse_permissions(SANDBOX_ALLOW),
+        require_confirmation=_parse_permissions(SANDBOX_CONFIRM),
     )
 
 

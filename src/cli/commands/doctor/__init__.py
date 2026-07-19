@@ -43,6 +43,7 @@ def ask_fix(result, auto_fix: bool) -> bool:
 def doctor(
     fix: bool = typer.Option(False, "--fix", help="Auto-fix issues"),
 ):
+    """Run diagnostic checks and optionally repair common problems."""
     console.rule("[bold]Doctor[/bold]")
 
     checks: list[DoctorCheck] = [

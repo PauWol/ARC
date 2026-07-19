@@ -26,6 +26,7 @@ _ = app.command()(doctor)
 app.add_typer(
     models_app,
     name="models",
+    help="Download, search, and manage local GGUF models.",
 )
 
 if __name__ == "__main__":

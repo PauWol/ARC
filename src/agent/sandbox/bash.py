@@ -5,9 +5,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from src.schema import ToolResult
-from src.policy import Permission, SandboxPolicy, DEFAULT_POLICY
-
+from src.agent.schema import ToolResult
+from src.agent.policy import Permission, SandboxPolicy, DEFAULT_POLICY
 
 # ── command → permission mapping ──────────────────────────────────────────────
 #

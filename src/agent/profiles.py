@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Pattern
 
-from src.llama_runtime import GenerationConfig, ModelSource
+from src.agent.llama_runtime import GenerationConfig, ModelSource
 
 
 @dataclass(frozen=True)

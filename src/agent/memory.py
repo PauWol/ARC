@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+import time
+from typing import Any, Literal
+import uuid
 
-from src.schema import Artifact
+from src.agent.events import EventBus
+from src.agent.schema import Artifact
 
 STATE_VALUES = {
     "new",
@@ -221,3 +224,39 @@ class AgentState:
 
 def build_initial_state(query: str) -> AgentState:
     return AgentState.from_user_input(query)
+
+
+@dataclass
+class Session:
+    query: str
+    id: str
+    event_bus: EventBus
+    step_index: int
+
+    intent: str
+    goals: list[str]
+
+    start_time: float
+    state: Literal[
+        "new",
+        "planned",
+        "working",
+        "present",
+        "done",
+        "replan",
+        "error",
+    ]
+
+    artifacts: list
+
+    def __init__(self, query: str) -> None:
+        self.query = query
+        self.id = uuid.uuid4().hex
+        self.event_bus = EventBus()
+        self.step_index = 0
+        self.state = "new"
+        self.start_time = time.time()
+
+
+    def _parse_query():
+        

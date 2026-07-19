@@ -1,8 +1,5 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable
-import os
-
-INLINE_ARTIFACT_MAX_CHARS = 4000
 
 
 # TODO: Make name and system prompt of config actually do something

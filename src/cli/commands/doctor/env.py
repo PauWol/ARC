@@ -41,10 +41,10 @@ def env_check() -> CheckResult:
 
 
 def fix_env(result: CheckResult):
-    result = result.fix_data
-    file = result.get("create_file", False)
-    wrong = result.get("wrong", [])
-    missing = result.get("missing", [])
+    result = result.fix_data  # pyright: ignore[reportAssignmentType]
+    file = result.get("create_file", False)  # pyright: ignore[reportAttributeAccessIssue]
+    wrong = result.get("wrong", [])  # pyright: ignore[reportAttributeAccessIssue]
+    missing = result.get("missing", [])  # pyright: ignore[reportAttributeAccessIssue]
 
     if file:
         ENV_PATH.write_text("")

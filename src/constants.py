@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-
 from dotenv import load_dotenv
 from typing import TypeVar
 
@@ -9,7 +8,7 @@ load_dotenv(Path(".env"), override=False)
 T = TypeVar("T")
 
 
-def get_env(key: str, default: T | None = None) -> str | T | None:
+def get_env(key: str, default: T) -> str | T:
     """
     Return an environment variable or a default value.
     """
@@ -45,7 +44,9 @@ DEFAULT_DOT_ENV = {
     "ARC_DIR": "~/arc",
     "AGENT_WORKSPACE": "~/arc/workspace",
     "LLM_MODEL_STORE": "~/arc/models",
+    # ---
     "HF_TOKEN": "YOUR-HUGGINGFACE-TOKEN-OPTIONAL",
+    # ---
     "LOG_LEVEL": "INFO",
     "LOG_FILE": "~/arc/workspace/agent.log",
     "LOG_CONSOLE": True,
@@ -53,8 +54,11 @@ DEFAULT_DOT_ENV = {
     "LOG_ROTATE": True,
     "LOG_MAX_BYTES": 10485760,
     "LOG_BACKUP_COUNT": 2,
+    # ---
     "SANDBOX_ALLOW": "READ,WRITE,EXECUTE,NETWORK",
     "SANDBOX_CONFIRM": "DELETE,SYSTEM,INSTALL",
+    # ---
+    "EXTRACTOR_INPUT_TOKEN_THRESHOLD": 150,
 }
 
 _DEV = DEFAULT_DOT_ENV
@@ -65,7 +69,7 @@ AGENT_WORKSPACE = path(get_env("AGENT_WORKSPACE", _DEV["AGENT_WORKSPACE"]))  # p
 
 # LLM Model Management
 LLM_MODEL_STORE = path(get_env("LLM_MODEL_STORE", _DEV["LLM_MODEL_STORE"]))  # pyright: ignore[reportArgumentType]
-HF_TOKEN = get_env("HF_TOKEN")
+HF_TOKEN = get_env("HF_TOKEN", None)
 
 
 # Logging
@@ -81,6 +85,11 @@ LOG_BACKUP_COUNT = get_env("LOG_BACKUP_COUNT", _DEV["LOG_BACKUP_COUNT"])
 # Permissions
 SANDBOX_ALLOW = get_env("SANDBOX_ALLOW", _DEV["SANDBOX_ALLOW"])
 SANDBOX_CONFIRM = get_env("SANDBOX_CONFIRM", _DEV["SANDBOX_CONFIRM"])
+
+# Agent Runtime
+EXTRACTOR_INPUT_TOKEN_THRESHOLD = get_env(
+    "EXTRACTOR_INPUT_TOKEN_THRESHOLD", _DEV["EXTRACTOR_INPUT_TOKEN_THRESHOLD"]
+)
 
 
 def workspcae_path(_path: str | None = None) -> Path:

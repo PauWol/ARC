@@ -8,7 +8,7 @@ import logging
 
 from src.agent.llama_runtime import LlamaRuntime
 
-from src.agent.memory import build_initial_state, AgentState
+from src.agent.memory import Session, build_initial_state, AgentState
 from src.agent.roles import (
     TaskExtractor,
     ExtractedTask,
@@ -16,16 +16,16 @@ from src.agent.roles import (
     Plan,
     Validator,
     build_validator_prompt,
-    synthesizer
+    synthesizer,
 )
-from src.schema import ToolResult
+from src.agent.schema import ToolResult
 from src.tools.utils import tool_result_validator
 
-from src.llama_runtime import ModelSource, RuntimeOptions
-from src.tools.sandbox.policy import SandboxPolicy
+from src.agent.llama_runtime import ModelSource, RuntimeOptions
+from src.agent.policy import SandboxPolicy
 from src.tools.builtin import make_builtin_tools
 
-from src.events import (
+from src.agent.events import (
     EventBus,
     emit_agent_done,
     emit_agent_error,
@@ -47,22 +47,6 @@ from src.events import (
     emit_reasoning_chunk,
     emit_reasoning_finished,
 )
-
-# Common near-misses a model reaches for that don't match a registered tool
-# name verbatim (e.g. planner prompts mentioning "bash" informally while the
-# actual registered tool is "run_bash"). Extend as you add/rename tools.
-TOOL_ALIASES: dict[str, str] = {
-    "bash": "run_bash",
-    "shell": "run_bash",
-    "sh": "run_bash",
-    "python": "execute_python",
-    "py": "execute_python",
-    "exec": "execute_python",
-    "read": "read_file",
-    "cat": "read_file",
-    "write": "write_file",
-    "save": "write_file",
-}
 
 logger = logging.getLogger("agent")
 
@@ -316,15 +300,10 @@ class Agent(LlamaRuntime):
 
     def _phase(self):
         if self.state.status == "done":
-
+            pass
 
     async def run(self, query: str):
-        # Init local vars
-        run_id = uuid.uuid4().hex
-        self._current_run_id = run_id  # used by act() for tool errors
-        event_bus = self.event_bus
-        final_output: str | None = None
-
+        self.session = Session()
 
         try:
             # extract intent and goals
@@ -333,9 +312,7 @@ class Agent(LlamaRuntime):
             self.state.intent = i_g.intent
             self.state.goals = i_g.goals
 
-
             while not self._stop_condition():
-
                 # ---------- Phase -----------
 
                 # 1. build context of that exe round
@@ -347,13 +324,12 @@ class Agent(LlamaRuntime):
                 )
 
                 self.state.set_status("planned")
-    
+
                 if "finish" in str(_plan.tool).lower():
                     self.state.set_status("done")
                     final_output = await self._synth_helper(run_id)
                     return self.state
 
-           
                 t1 = time.time()
 
                 result = await self.act(_plan)

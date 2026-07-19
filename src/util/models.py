@@ -7,7 +7,7 @@ from typing import override
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download  # pyright: ignore[reportUnknownVariableType]
 
-from src.util.constants import env, CONST
+from src.constants import LLM_MODEL_STORE
 
 
 api = HfApi()
@@ -27,7 +27,7 @@ def str_to_quant(value: str) -> QUANTS | None:
 
 
 def get_model_store_dir() -> Path:
-    path = Path(env(CONST.LLM_MODEL_STORE.value)).expanduser().resolve()
+    path = LLM_MODEL_STORE.resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
