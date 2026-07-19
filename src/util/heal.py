@@ -1,4 +1,6 @@
-from src.util.constants import ENV_PATH, CONST, DEFAULT_DOT_ENV
+from collections.abc import Iterable
+
+from src.constants import ENV_PATH, DEFAULT_DOT_ENV
 
 
 def ensure_dot_env() -> bool:
@@ -6,11 +8,8 @@ def ensure_dot_env() -> bool:
     return ENV_PATH.exists()
 
 
-def _in_const(line: str) -> str | None:
-    for e in CONST:
-        if line.startswith(e.value):
-            return e.value
-    return None
+def find_key(text: str, keys: Iterable[str]) -> str | None:
+    return next((k for k in keys if k in text), None)
 
 
 def check_missing_dot_env_entrys():
@@ -23,19 +22,19 @@ def check_missing_dot_env_entrys():
     _w = []
     _e = []
 
+    _d_env_keys = DEFAULT_DOT_ENV.keys()
+
     with ENV_PATH.open() as f:
         for l in f:
             l = l.strip()
 
-            key = _in_const(l)
+            _key = find_key(l, _d_env_keys)
 
-            if not key:  # Wrong entrys
+            if not _key:  # Wrong entrys
                 _w.append(l)
 
             else:
-                _e.append(key)  # append exsisting
-
-    _d_env_keys = DEFAULT_DOT_ENV.keys()
+                _e.append(_key)  # append exsisting
 
     if len(_d_env_keys) == len(_e) and len(_w) == 0:  # fast path
         return _w, None

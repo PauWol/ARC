@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from src.llama_runtime import LlamaRuntime
-from src.roles.base import BaseRole, ReasoningMode, ReasoningSink
+from src.types import BaseRole, ReasoningMode, ReasoningSink
 from src.tools import ToolPromptGenerator
 
 PLANNER_PROMPT = """
@@ -14,9 +14,8 @@ Only one step at a time.
 Do not plan multiple steps.
 
 RULES:
-- Output ONLY valid JSON
 - The "tool" field must be EXACTLY one of the names listed under TOOLS below
-  — copy the name verbatim, do not abbreviate or guess a different name
+- copy the name verbatim, do not abbreviate or guess a different name
 - Every tool requires an "input" object with its documented arguments;
   never leave "input" empty unless the tool takes no arguments
 - One tool call per step
@@ -24,10 +23,6 @@ RULES:
 - If task is complete → use "finish"
 - If no tool is needed → use "finish"
 """
-# NOTE: this used to say "Prefer bash if possible", but the registered tool
-# is named "run_bash", not "bash" — that line was training the model to call
-# a tool that doesn't exist. Removed; the tool list below (built dynamically
-# via ToolPromptGenerator) is the only source of truth for valid names.
 
 
 @dataclass(slots=True)
@@ -84,7 +79,9 @@ class Planner(BaseRole[Plan]):
         )
 
     def build_system_prompt(self, optional_append: str = "") -> str:
-        return super().build_system_prompt(optional_append+self.system_prompt_addition)
+        return super().build_system_prompt(
+            optional_append + self.system_prompt_addition
+        )
 
     def _validate(self, plan: Plan) -> str | None:
         tool = str(plan.tool).strip().lower()
@@ -98,7 +95,7 @@ class Planner(BaseRole[Plan]):
         if tool not in self._tool_names:
             return (
                 f'"{tool}" is not a registered tool name. Valid names: '
-                f"{sorted(self._tool_names)}. Copy one verbatim into \"tool\"."
+                f'{sorted(self._tool_names)}. Copy one verbatim into "tool".'
             )
 
         if not plan.input and tool not in self._no_arg_tools:
@@ -115,7 +112,7 @@ def _takes_no_required_args(tool: Callable) -> bool:
 
     try:
         sig = inspect.signature(tool)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False  # unknown signature — assume it needs input, safer default
 
     for p in sig.parameters.values():

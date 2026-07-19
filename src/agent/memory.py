@@ -95,6 +95,7 @@ class AgentState:
     artifacts: list[Artifact] = field(default_factory=list)
 
     step_index: int = 0
+    replan_index: int = 0
     status: str = "new"
     error: str | None = None
 

@@ -1,11 +1,6 @@
 """
 Web search utility functions for LLM agents.
 Three versions ranging from zero-dependency to full-featured.
-
-Dependencies per version:
-  v1 (DuckDuckGo, no key): pip install requests beautifulsoup4
-  v2 (SerpAPI / Brave):    pip install requests
-  v3 (agent-ready):        pip install requests beautifulsoup4 (+ optional openai/anthropic)
 """
 
 from __future__ import annotations
@@ -14,17 +9,13 @@ import json
 import os
 import re
 import time
+import requests
+
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote_plus, urlencode
-
-import requests
+from urllib.parse import unquote, urlencode
 from bs4 import BeautifulSoup
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared data model
-# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class SearchResult:
@@ -47,10 +38,6 @@ class SearchResult:
         """Compact format for stuffing into an LLM prompt."""
         return f"[{self.position}] {self.title}\n{self.url}\n{self.snippet}"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VERSION 1 — DuckDuckGo HTML scrape (no API key required)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def search_duckduckgo(
     query: str,
@@ -100,14 +87,13 @@ def search_duckduckgo(
         if not title_tag:
             continue
 
-        raw_href = title_tag.get("href", "")
-        # DDG wraps URLs — extract the real one
-        url_match = re.search(r"uddg=([^&]+)", raw_href)
-        clean_url = (
-            requests.utils.unquote(url_match.group(1))
-            if url_match
-            else raw_href
-        )
+        href = title_tag.get("href")
+
+        if not isinstance(href, str):
+            continue
+
+        url_match = re.search(r"uddg=([^&]+)", href)
+        clean_url = unquote(url_match.group(1)) if url_match else href
 
         results.append(
             SearchResult(
@@ -121,10 +107,6 @@ def search_duckduckgo(
 
     return results
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VERSION 2 — Production-grade with multiple API back-ends
-# ─────────────────────────────────────────────────────────────────────────────
 
 class WebSearcher:
     """
@@ -173,9 +155,9 @@ class WebSearcher:
     ) -> list[SearchResult]:
         """Run a web search and return up to *n* results."""
         dispatch = {
-            "brave":   self._brave_search,
+            "brave": self._brave_search,
             "serpapi": self._serpapi_search,
-            "google":  self._google_search,
+            "google": self._google_search,
         }
         for attempt in range(self.retries + 1):
             try:
@@ -204,13 +186,13 @@ class WebSearcher:
         resp = self._session.get(
             "https://api.search.brave.com/res/v1/web/search",
             headers={
-                "Accept":               "application/json",
-                "Accept-Encoding":      "gzip",
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
                 "X-Subscription-Token": self.api_key,
             },
             params={
-                "q":       query,
-                "count":   min(n, 20),
+                "q": query,
+                "count": min(n, 20),
                 "country": country,
                 "search_lang": language,
             },
@@ -227,9 +209,7 @@ class WebSearcher:
                 position=i,
                 source="brave",
             )
-            for i, r in enumerate(
-                data.get("web", {}).get("results", [])[:n], start=1
-            )
+            for i, r in enumerate(data.get("web", {}).get("results", [])[:n], start=1)
         ]
 
     def _serpapi_search(
@@ -238,12 +218,12 @@ class WebSearcher:
         resp = self._session.get(
             "https://serpapi.com/search",
             params={
-                "q":       query,
+                "q": query,
                 "api_key": self.api_key,
-                "num":     min(n, 10),
-                "gl":      country,
-                "hl":      language,
-                "engine":  "google",
+                "num": min(n, 10),
+                "gl": country,
+                "hl": language,
+                "engine": "google",
             },
             timeout=self.timeout,
         )
@@ -258,9 +238,7 @@ class WebSearcher:
                 position=r.get("position", i),
                 source="serpapi",
             )
-            for i, r in enumerate(
-                data.get("organic_results", [])[:n], start=1
-            )
+            for i, r in enumerate(data.get("organic_results", [])[:n], start=1)
         ]
 
     def _google_search(
@@ -269,12 +247,12 @@ class WebSearcher:
         resp = self._session.get(
             "https://www.googleapis.com/customsearch/v1",
             params={
-                "q":   query,
+                "q": query,
                 "key": self.api_key,
-                "cx":  self.google_cx,
+                "cx": self.google_cx,
                 "num": min(n, 10),
-                "gl":  country,
-                "lr":  f"lang_{language}",
+                "gl": country,
+                "lr": f"lang_{language}",
             },
             timeout=self.timeout,
         )
@@ -292,48 +270,6 @@ class WebSearcher:
             for i, r in enumerate(data.get("items", [])[:n], start=1)
         ]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VERSION 3 — Agent tool definitions (Anthropic + OpenAI format)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Tool schemas ──────────────────────────────────────────────────────────────
-
-ANTHROPIC_SEARCH_TOOL: dict[str, Any] = {
-    "name": "web_search",
-    "description": (
-        "Search the web for current information. Use this when you need "
-        "up-to-date facts, recent events, or anything beyond your training data. "
-        "Returns a list of relevant web results with titles, URLs, and snippets."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query. Be specific and concise.",
-            },
-            "n": {
-                "type": "integer",
-                "description": "Number of results to return (default 5, max 10).",
-                "default": 5,
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-OPENAI_SEARCH_TOOL: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": ANTHROPIC_SEARCH_TOOL["description"],
-        "parameters": ANTHROPIC_SEARCH_TOOL["input_schema"],
-    },
-}
-
-
-# ── Tool executor ─────────────────────────────────────────────────────────────
 
 @dataclass
 class AgentSearchTool:
@@ -375,14 +311,6 @@ class AgentSearchTool:
                 google_cx=self.google_cx,
             )
 
-    @property
-    def anthropic_tool_def(self) -> dict[str, Any]:
-        return ANTHROPIC_SEARCH_TOOL
-
-    @property
-    def openai_tool_def(self) -> dict[str, Any]:
-        return OPENAI_SEARCH_TOOL
-
     def execute(self, tool_input: dict[str, Any]) -> str:
         """
         Run the search and return a JSON string (suitable as tool_result content).
@@ -418,10 +346,6 @@ class AgentSearchTool:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Optional: fetch and clean a page's full text (for follow-up reads)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def fetch_page_text(url: str, timeout: int = 12, max_chars: int = 8_000) -> str:
     """
     Fetch a URL and return clean plain text (no HTML noise).
@@ -452,21 +376,7 @@ def fetch_page_text(url: str, timeout: int = 12, max_chars: int = 8_000) -> str:
     return text[:max_chars]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Quick smoke-test
-# ─────────────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     print("=== v1: DuckDuckGo scrape ===")
     for r in search_duckduckgo("anthropic claude 2025", max_results=3):
         print(r.to_context_string(), "\n")
-
-    print("\n=== v3: AgentSearchTool (duckduckgo) ===")
-    tool = AgentSearchTool(provider="duckduckgo")
-    output = tool.execute({"query": "latest AI news", "n": 3})
-    print(output)
-
-    # To use a real API back-end, uncomment and set your key:
-    # print("\n=== v2: Brave Search ===")
-    # searcher = WebSearcher(provider="brave", api_key="YOUR_BRAVE_KEY")
-    # print(searcher.search_and_format("python async best practices", n=4))

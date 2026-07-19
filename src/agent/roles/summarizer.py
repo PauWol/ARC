@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from src.llama_runtime import LlamaRuntime
-from src.roles.base import BaseRole
+from src.types import BaseRole
 
 MEMORY_SUMMARY_PROMPT = """
 ROLE: memory compressor

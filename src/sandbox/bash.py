@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from src.schema import ToolResult
-from src.tools.sandbox.policy import Permission, SandboxPolicy, DEFAULT_POLICY
+from src.policy import Permission, SandboxPolicy, DEFAULT_POLICY
 
 
 # ── command → permission mapping ──────────────────────────────────────────────
@@ -131,9 +131,6 @@ _SYSTEM_PATH_PREFIXES: tuple[str, ...] = (
 _MAX_TIMEOUT: float = 60.0
 
 
-# ── path helpers ──────────────────────────────────────────────────────────────
-
-
 def _resolve_safe_cwd(cwd: str | None) -> Path:
     base_dir = Path.cwd().resolve()
     if not cwd:
@@ -145,9 +142,6 @@ def _resolve_safe_cwd(cwd: str | None) -> Path:
     if resolved != base_dir and base_dir not in resolved.parents:
         raise ValueError("cwd must stay inside the project directory")
     return resolved
-
-
-# ── command analysis ──────────────────────────────────────────────────────────
 
 
 def _classify_command(command: str) -> list[tuple[str, Permission]]:
@@ -173,9 +167,6 @@ def _classify_command(command: str) -> list[tuple[str, Permission]]:
                     hits.append((token, Permission.SYSTEM))
                     break
     return hits
-
-
-# ── core runner ───────────────────────────────────────────────────────────────
 
 
 def _run_bash_sync(

@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from src.tools.sandbox.policy import SandboxPolicy
-
-# ── sandbox constants ─────────────────────────────────────────────────────────
+from typing import Any
+from src.policy import SandboxPolicy
 
 MAX_MEMORY_MB = 256
 TIMEOUT_SECONDS = 3
@@ -22,8 +18,6 @@ def safe_open(path, mode="r", *args, **kwargs):
         raise PermissionError("Path escape blocked")
     return open(full, mode, *args, **kwargs)
 
-
-# ── builtins ──────────────────────────────────────────────────────────────────
 
 #: Always available — pure value-manipulation, no I/O or introspection.
 SAFE_BUILTINS: dict[str, Any] = {

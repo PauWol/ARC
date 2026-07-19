@@ -1,17 +1,23 @@
+"""
+# The builtin tool module for Arc
+Here all builtin tools or subagent-type-tools are gathered and provided using the BUILTIN_TOOLS or make_builtin_tools method.
+"""
+
 from __future__ import annotations
 
 import asyncio
 from typing import Callable
 
 from src.llama_runtime import LlamaRuntime
-from src.roles.generator import GeneralGenerator, GeneratedContent, GenerationKind
+from src.subagents import Generator, GeneratedContent, GenerationKind
 from src.schema import Artifact, ToolResult
-from src.tools.sandbox import (
+
+from src.sandbox import (
+    run_bash as _run_bash,
     run_python_file as _run_python_file,
     run_python as _run_python,
 )
-from src.tools.sandbox.bash import run_bash as _run_bash
-from src.tools.sandbox.policy import SandboxPolicy, policy_from_env
+from src.policy import SandboxPolicy, policy_from_env
 
 
 def _active_policy(override: SandboxPolicy | None) -> SandboxPolicy:
@@ -20,6 +26,7 @@ def _active_policy(override: SandboxPolicy | None) -> SandboxPolicy:
 
 async def read_file(path: str) -> ToolResult:
     try:
+
         def _read() -> str:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -32,6 +39,7 @@ async def read_file(path: str) -> ToolResult:
 
 async def write_file(path: str, content: str) -> ToolResult:
     try:
+
         def _write() -> None:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -58,7 +66,7 @@ def make_default_generator_tool(
     default_kind: GenerationKind = "text",
     default_language: str | None = None,
 ) -> Callable:
-    generator = GeneralGenerator(
+    generator = Generator(
         runtime=runtime,
         tokens=tokens,
         temperature=temperature,

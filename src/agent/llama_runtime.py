@@ -17,6 +17,25 @@ LlamaRuntime      set_system_prompt() pre-fills the KV cache with a system
                   from_path() / from_hf() constructors replace the raw __init__.
                   chat() / complete() accept an optional config= argument.
 
+                  chat()/stream_chat() take tools= / tool_choice= /
+                  response_format= directly (forwarded to
+                  create_chat_completion, not through GenerationConfig — tool
+                  schemas relies on the model's own chat template; leave
+                  RuntimeOptions.chat_format=None to auto-detect it from the
+                  GGUF, or set chat_format="chatml-function-calling" as a
+                  fallback for models with no native tool-calling template).
+
+                  reset now defaults to False on chat()/stream_chat(): each
+                  call is assumed to be one turn of an ongoing conversation,
+                  so llama.cpp's own KV prefix-cache reuse does the work
+                  instead of reprocessing the whole history every turn. Pass
+                  reset=True yourself only for a conversation's first turn —
+                  or just use Conversation, below, which tracks that for you.
+
+Conversation      Wraps a LlamaRuntime for a multi-turn agent loop: tracks
+                  message history, calls chat() with reset=True only on the
+                  first turn, and gives you send() / send_tool_results().
+
 RuntimePool       Direct dispatch: pool.chat(name, msgs) / pool.complete(name, prompt).
                   LRU eviction: when max_loaded is set the least-recently-used
                   model is unloaded automatically before loading a new one.
@@ -74,7 +93,7 @@ class HardwareProfile:
             from llama_cpp import llama_supports_gpu_offload  # type: ignore
 
             gpu = llama_supports_gpu_offload()
-        except (ImportError, AttributeError):
+        except ImportError, AttributeError:
             gpu = False
 
         profile = cls(
@@ -536,11 +555,25 @@ class LlamaRuntime:
             return len(self.ensure_loaded().tokenize(text.encode(), add_bos))
 
     def context_budget(self) -> dict[str, int]:
-        """Snapshot of current KV usage and remaining capacity."""
+        """
+        Snapshot of current KV usage and remaining capacity.
+
+        Uses the cheap ``Llama.n_tokens`` counter that llama-cpp-python
+        already tracks internally. Falls back to save_state() (which copies
+        the entire KV cache just to read one integer) only on versions where
+        that attribute isn't exposed.
+        """
         with self._load_lock:
             llm = self.ensure_loaded()
             n_ctx = llm.n_ctx()
-            used = int(llm.save_state().n_tokens)
+            used = getattr(llm, "n_tokens", None)
+            if used is None:
+                log.debug(
+                    "llama_cpp.Llama has no n_tokens attribute on this version; "
+                    "falling back to save_state() for context_budget() (expensive)."
+                )
+                used = llm.save_state().n_tokens
+            used = int(used)
             return {
                 "max": n_ctx,
                 "used": used,
@@ -615,17 +648,36 @@ class LlamaRuntime:
         messages: Sequence[dict[str, str]],
         *,
         config: GenerationConfig | None = None,
-        reset: bool = True,
+        reset: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
         Blocking chat completion.
 
+        ``tools`` / ``tool_choice`` / ``response_format`` are forwarded
+        straight to ``create_chat_completion`` — kept out of GenerationConfig
+        entirely so they can never collide with sampling-param merging.
+        They rely on the loaded GGUF's own tool-calling chat template being
+        auto-detected (leave ``RuntimeOptions.chat_format=None``), or on an
+        explicit fallback like ``chat_format="chatml-function-calling"`` for
+        models with no native tool template.
+
+        ``reset`` defaults to False: this call assumes it is one turn in an
+        ongoing conversation, and lets llama.cpp's own longest-common-prefix
+        KV cache reuse do its job instead of reprocessing the whole history
+        every turn. Pass ``reset=True`` only for the first turn of a new
+        conversation (or use the ``Conversation`` helper, which does this
+        for you automatically).
+
         If a system prompt was cached via set_system_prompt() and the first
-        message matches it, the KV state is restored so the prefix is not
-        re-processed.  Pass reset=False to continue a previous context.
+        message matches it, the KV state is restored so that prefix isn't
+        re-processed either.
         """
         cfg = self._resolve_config(config, **kwargs)
+        call_kwargs = self._tool_kwargs(tools, tool_choice, response_format)
         with self._infer_lock:
             sys_state = self._matching_sys_state(messages)
             if sys_state is not None:
@@ -637,6 +689,7 @@ class LlamaRuntime:
                 messages=list(messages),  # type: ignore[arg-type]
                 stream=False,
                 **cfg.to_kwargs(),
+                **call_kwargs,
             )
         self._record_usage(response)
         self._touch()
@@ -647,11 +700,16 @@ class LlamaRuntime:
         messages: Sequence[dict[str, str]],
         *,
         config: GenerationConfig | None = None,
-        reset: bool = True,
+        reset: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Iterator[Any]:
-        """Streaming chat completion; yields chunk dicts."""
+        """Streaming chat completion; yields chunk dicts. See chat() for
+        the meaning of ``reset`` and the tool-calling parameters."""
         cfg = self._resolve_config(config, **kwargs)
+        call_kwargs = self._tool_kwargs(tools, tool_choice, response_format)
         with self._infer_lock:
             sys_state = self._matching_sys_state(messages)
             if sys_state is not None:
@@ -663,8 +721,31 @@ class LlamaRuntime:
                 messages=list(messages),  # type: ignore[arg-type]
                 stream=True,
                 **cfg.to_kwargs(),
+                **call_kwargs,
             )
         self._touch()
+
+    @staticmethod
+    def _tool_kwargs(
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        response_format: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build the extra create_chat_completion kwargs for tool calling.
+
+        Kept separate from GenerationConfig on purpose: GenerationConfig is a
+        fixed-field dataclass (merge() uses dataclasses.replace), so passing
+        tools=... through it would raise a TypeError instead of doing
+        anything useful.
+        """
+        kw: dict[str, Any] = {}
+        if tools is not None:
+            kw["tools"] = tools
+        if tool_choice is not None:
+            kw["tool_choice"] = tool_choice
+        if response_format is not None:
+            kw["response_format"] = response_format
+        return kw
 
     async def acomplete(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Async wrapper for complete()."""
@@ -841,6 +922,174 @@ class LlamaRuntime:
                             self._unload()
                 finally:
                     self._infer_lock.release()
+
+
+class Conversation:
+    """
+    Tracks one ongoing multi-turn chat against a LlamaRuntime.
+
+    This exists to make the reset=True-only-on-the-first-turn pattern hard
+    to get wrong. Calling ``runtime.chat()`` directly with the wrong reset
+    value is exactly what silently defeats llama.cpp's own KV prefix reuse
+    (reset=True every turn) or leaks a previous session's context into a new
+    one (reset=False on the first turn) — Conversation just tracks which
+    turn it is so you don't have to.
+
+    Usage::
+
+        convo = Conversation(runtime, system="You are a helpful assistant.")
+        reply = convo.send("What's the weather in Berlin?", tools=tools)
+        # ... execute any tool_calls in reply, then feed results back:
+        reply = convo.send_tool_results(tool_results)
+
+    Not thread-safe across concurrent send() calls on the same Conversation
+    (the underlying LlamaRuntime's _infer_lock serializes actual inference,
+    but message-history bookkeeping here is not itself locked).
+    """
+
+    def __init__(self, runtime: "LlamaRuntime", system: str | None = None) -> None:
+        self.runtime = runtime
+        self.messages: list[dict[str, Any]] = []
+        self._started = False
+        if system is not None:
+            self.messages.append({"role": "system", "content": system})
+
+    def send(
+        self,
+        content: str,
+        *,
+        config: GenerationConfig | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Append a user message, run one turn, append the assistant reply."""
+        self.messages.append({"role": "user", "content": content})
+        return self._run(
+            config=config,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            **kwargs,
+        )
+
+    def send_tool_results(
+        self,
+        results: Sequence[dict[str, Any]],
+        *,
+        config: GenerationConfig | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Append one or more tool-result messages and run the next turn.
+
+        Each item in ``results`` should already be a proper message dict,
+        e.g. ``{"role": "tool", "tool_call_id": ..., "content": ...}``.
+        """
+        self.messages.extend(results)
+        return self._run(
+            config=config,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            **kwargs,
+        )
+
+    def _run(self, **kwargs: Any) -> dict[str, Any]:
+        reset = not self._started
+        response = self.runtime.chat(self.messages, reset=reset, **kwargs)
+        self._started = True
+        choice = response["choices"][0]["message"]
+        self.messages.append(dict(choice))
+        return response
+
+    def reset(self, system: str | None = None) -> None:
+        """Start a fresh conversation (next send() will reset the KV cache)."""
+        self.messages = []
+        self._started = False
+        if system is not None:
+            self.messages.append({"role": "system", "content": system})
+
+    def send_stream(
+        self,
+        content: str,
+        *,
+        config: GenerationConfig | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """
+        Streaming counterpart to send().
+
+        Yields raw chunk dicts as they arrive (for printing content deltas
+        live) and, once the stream ends, appends the fully-accumulated
+        assistant message — including any tool_calls — to self.messages,
+        exactly like send() does for the non-streaming response.
+
+        NOTE: this assumes llama-cpp-python streams tool_call deltas in the
+        OpenAI-compatible incremental shape (chunk["choices"][0]["delta"]
+        with "tool_calls": [{"index", "id", "function": {"name",
+        "arguments"}}, ...], arguments arriving as partial JSON strings to
+        concatenate). Print a few raw chunks from your actual version first
+        to confirm this shape before relying on it — it has changed across
+        llama-cpp-python releases.
+        """
+        self.messages.append({"role": "user", "content": content})
+        reset = not self._started
+        accumulated_content: list[str] = []
+        tool_buffers: dict[int, dict[str, Any]] = {}
+
+        for chunk in self.runtime.stream_chat(
+            self.messages,
+            reset=reset,
+            config=config,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            **kwargs,
+        ):
+            self._started = True
+            yield chunk
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+
+            piece = delta.get("content")
+            if piece:
+                accumulated_content.append(piece)
+
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                buf = tool_buffers.setdefault(
+                    idx,
+                    {
+                        "id": None,
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
+                )
+                if tc.get("id"):
+                    buf["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    buf["function"]["name"] += fn["name"]
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    buf["function"]["arguments"] += args
+                elif args:  # some versions send the whole dict at once
+                    buf["function"]["arguments"] = args
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(accumulated_content) or None,
+        }
+        if tool_buffers:
+            message["tool_calls"] = [tool_buffers[i] for i in sorted(tool_buffers)]
+        self.messages.append(message)
 
 
 class RuntimePool:

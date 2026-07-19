@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import difflib
+from pathlib import Path
 import time
 from typing import Callable
 import uuid
@@ -65,6 +66,7 @@ TOOL_ALIASES: dict[str, str] = {
 
 logger = logging.getLogger("agent")
 
+
 class ReasoningHook:
     """
     Bridges BaseRole's reasoning stream to the Agent's event bus so a UI can
@@ -126,6 +128,7 @@ class AgentConfig:
     def from_path(cls, path: str, **kwargs):
         return cls(ModelSource(path), **kwargs)
 
+
 class Agent(LlamaRuntime):
     def __init__(
         self,
@@ -135,10 +138,12 @@ class Agent(LlamaRuntime):
         self._config = config
         self.event_bus: EventBus = EventBus()
 
-        self._config.tools =make_builtin_tools(self,self._config.sandbox_policy)
+        self._config.tools = make_builtin_tools(self, self._config.sandbox_policy)
         self._extractor = TaskExtractor(self)
         self._planner = Planner(
-            self, config.tools, reasoning_hook=ReasoningHook(self, "planner")  # pyright: ignore[reportCallIssue]
+            self,
+            config.tools,
+            reasoning_hook=ReasoningHook(self, "planner"),  # pyright: ignore[reportCallIssue]
         )
         self._validator = Validator(self)
         self._synth = Synthesizer(self)
@@ -161,7 +166,7 @@ class Agent(LlamaRuntime):
             getattr(tool, "__name__", tool.__class__.__name__).lower(): tool
             for tool in tools
         }
-    
+
     def _resolve_tool_name(self, name: str) -> str | None:
         """
         Resolve a planner-provided tool name to a registered tool-map key.
@@ -182,11 +187,8 @@ class Agent(LlamaRuntime):
         if alias and alias in self._tool_map:
             return alias
 
-        close = difflib.get_close_matches(
-            name, self._tool_map.keys(), n=1, cutoff=0.6
-        )
+        close = difflib.get_close_matches(name, self._tool_map.keys(), n=1, cutoff=0.6)
         return close[0] if close else None
-
 
     def _stop_condition(self) -> bool:
         if self.state.is_done:
@@ -221,7 +223,7 @@ class Agent(LlamaRuntime):
 
         return base
 
-    def _save_get_tool(self,plan:Plan):
+    def _save_get_tool(self, plan: Plan):
         """
         Get the tool and its input from Plan.
         Register Error with correction hint when tool not found directly.
@@ -233,17 +235,19 @@ class Agent(LlamaRuntime):
         _tool_map = self._tool_map
         if not _tool_map or not _raw_name in _tool_map:
             _res_name = self._resolve_tool_name(_raw_name)
-            self.state.remember_error(f"unknown_tool:{_raw_name} -> might be {_res_name}")
+            self.state.remember_error(
+                f"unknown_tool:{_raw_name} -> might be {_res_name}"
+            )
             return None, {}, _raw_name
-    
+
         _tool_inp = plan.input if isinstance(plan.input, dict) else {}
         _tool = _tool_map.get(_raw_name)
 
         return _tool, _tool_inp, _raw_name
 
     async def act(self, plan: Plan) -> ToolResult:
-        """Execute the plan step produced by the planner."""        
-        _tool, _tool_inp, _raw_tool_name = self._save_get_tool(plan) 
+        """Execute the plan step produced by the planner."""
+        _tool, _tool_inp, _raw_tool_name = self._save_get_tool(plan)
 
         if _tool is None:
             emit_tool_error(
@@ -281,7 +285,9 @@ class Agent(LlamaRuntime):
                 f"tool_result:{_raw_tool_name} | {result.summary} | {result.data}"
             )
         elif getattr(result, "summary", None):
-            self.state.remember_result(f"tool_result:{_raw_tool_name} | {result.summary}")
+            self.state.remember_result(
+                f"tool_result:{_raw_tool_name} | {result.summary}"
+            )
 
         arts = list(getattr(result, "artifacts", []) or [])
         if arts:
@@ -428,6 +434,19 @@ class Agent(LlamaRuntime):
                         note="synthesis complete",
                     )
 
+                    if self.state.artifacts:
+                        for a in self.state.artifacts:
+                            if not a.path:
+                                continue
+
+                            _path = Path(a.path)
+
+                            if _path.exists():
+                                continue
+
+                            if a.content:
+                                _path.write_text(a.content, "utf-8")
+
                 elif validation.status == "present":
                     self.state.set_status("present")
                     emit_state_updated(
@@ -492,3 +511,5 @@ class Agent(LlamaRuntime):
 
 # TODO: State transitions and updates need to be checked and updated
 # TODO: Synthesized answer needs to event handled -> update events
+# TODO: Tool permission confirmation prompt / hook
+# TODO: Proper Artifact handling

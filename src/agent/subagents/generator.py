@@ -4,17 +4,18 @@ from dataclasses import dataclass
 from typing import Literal
 
 from src.llama_runtime import LlamaRuntime
-from src.roles.base import BaseRole
+from src.types import BaseRole
 
 GenerationKind = Literal[
-"code",
-"text",
-"summary",
-"markdown",
-"json",
-"yaml",
-"config",
+    "code",
+    "text",
+    "summary",
+    "markdown",
+    "json",
+    "yaml",
+    "config",
 ]
+
 
 def build_generation_prompt(kind: str, language: str | None = None) -> str:
     language_line = f"Language: {language}\n" if language else ""
@@ -42,16 +43,17 @@ def build_generation_prompt(kind: str, language: str | None = None) -> str:
     * If a summary is requested, focus on the essential points only
     """.strip()
 
+
 @dataclass(slots=True)
 class GeneratedContent:
     kind: GenerationKind
     filename: str | None = None
     content: str = ""
     description: str = ""
-        
-class GeneralGenerator(BaseRole[GeneratedContent]):
-    output_schema = GeneratedContent
 
+
+class Generator(BaseRole[GeneratedContent]):
+    output_schema = GeneratedContent
 
     def __init__(
         self,
@@ -69,7 +71,7 @@ class GeneralGenerator(BaseRole[GeneratedContent]):
     async def run(
         self,
         query: str,
-        kind: GenerationKind  = "text",
+        kind: GenerationKind = "text",
         language: str | None = None,
         filename: str | None = None,
     ) -> GeneratedContent:

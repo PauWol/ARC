@@ -5,7 +5,7 @@ from typing import Literal
 
 from src.llama_runtime import LlamaRuntime
 from src.memory import AgentState
-from src.roles.base import BaseRole
+from src.types import BaseRole
 from src.schema import ToolResult
 from src.roles.planner import Plan
 

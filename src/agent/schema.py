@@ -103,14 +103,3 @@ class SubAgentResult:
 
     description: str = ""
     artifacts: list[Artifact] | None = None
-
-
-@dataclass(slots=True)
-class LoggingConfig:
-    level: str = os.getenv("LOG_LEVEL", "INFO")
-    file: str = os.getenv("LOG_FILE", "logs/agent.log")
-    console: bool = os.getenv("LOG_CONSOLE", "true").lower() == "true"
-    json: bool = os.getenv("LOG_JSON", "false").lower() == "true"
-    rotate: bool = os.getenv("LOG_ROTATE", "true").lower() == "true"
-    max_bytes: int = int(os.getenv("LOG_MAX_BYTES", "10485760"))
-    backup_count: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))

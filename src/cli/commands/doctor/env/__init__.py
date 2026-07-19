@@ -1,6 +1,6 @@
 from src.cli.types import CheckResult
 from src.util.heal import ensure_dot_env, check_missing_dot_env_entrys, repair_dot_env
-from src.util.constants import ENV_PATH, DEFAULT_DOT_ENV
+from src.constants import ENV_PATH, DEFAULT_DOT_ENV
 
 
 def env_check() -> CheckResult:

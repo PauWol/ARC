@@ -1,7 +1,8 @@
 # main.py
 import typer
 from rich.traceback import install
-from src.cli.commands.run import run
+
+# from src.cli.commands.run import run
 from src.cli.theme import console, arc_rule, arc_panel, arc_status
 from src.cli.commands.doctor import doctor
 from src.cli.commands.models import app as models_app
@@ -17,7 +18,7 @@ app = typer.Typer(
 )
 
 
-_ = app.command()(run)
+# _ = app.command()(run)
 
 
 _ = app.command()(doctor)

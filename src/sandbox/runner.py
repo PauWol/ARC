@@ -18,7 +18,7 @@ from RestrictedPython.Eval import default_guarded_getiter, default_guarded_getit
 
 from src.schema import ToolResult
 
-from src.tools.sandbox.allowlist import (
+from src.sandbox.allowlist import (
     SAFE_BUILTINS,
     DANGEROUS,
     MAX_MEMORY_MB,
@@ -26,10 +26,7 @@ from src.tools.sandbox.allowlist import (
     BLOCKED_ATTRS,
     build_python_profile,
 )
-from src.tools.sandbox.policy import SandboxPolicy, DEFAULT_POLICY
-
-
-# ── safe import factory ───────────────────────────────────────────────────────
+from src.policy import SandboxPolicy, DEFAULT_POLICY
 
 
 def _make_safe_import(safe_modules: frozenset[str]):
@@ -44,18 +41,12 @@ def _make_safe_import(safe_modules: frozenset[str]):
     return safe_import
 
 
-# ── merged builtins factory ───────────────────────────────────────────────────
-
-
 def _make_builtins(safe_import_fn) -> dict:
     merged = {**safe_builtins, **SAFE_BUILTINS}
     for name in DANGEROUS:
         merged.pop(name, None)
     merged["__import__"] = safe_import_fn
     return merged
-
-
-# ── augmented assignment helper ───────────────────────────────────────────────
 
 
 def _inplacevar_(op: str, x, y):
@@ -88,18 +79,12 @@ def _inplacevar_(op: str, x, y):
             raise ValueError(f"[Sandbox] Unsupported inplace operator: {op}")
 
 
-# ── attribute guard ───────────────────────────────────────────────────────────
-
-
 def _safe_getattr_(obj, name: str, *args):
     if name.startswith("_"):
         raise AttributeError(f"[Sandbox] Access to {name!r} is not allowed")
     if name in BLOCKED_ATTRS:
         raise AttributeError(f"[Sandbox] Access to {name!r} is not allowed")
     return getattr(obj, name, *args)
-
-
-# ── AST security visitor ──────────────────────────────────────────────────────
 
 
 class SecurityVisitor(ast.NodeVisitor):
@@ -137,9 +122,6 @@ class SecurityVisitor(ast.NodeVisitor):
 def _validate_code(code: str, forbidden_nodes: tuple[type[ast.AST], ...]) -> None:
     tree = ast.parse(code)
     SecurityVisitor(forbidden_nodes).visit(tree)
-
-
-# ── worker (runs in child process) ───────────────────────────────────────────
 
 
 def _worker(code: str, conn: Connection, profile: dict) -> None:

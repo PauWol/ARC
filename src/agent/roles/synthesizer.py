@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from src.roles.base import BaseRole
+from src.types import BaseRole
 
 ANSWER_SYNTHESIZER_PROMPT = """
 ROLE: answer synthesizer and presenter

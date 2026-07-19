@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from src.llama_runtime import LlamaRuntime
-from src.roles.base import BaseRole
+from src.types import BaseRole
 
 EXTRACT_PROMPT = """
 ROLE: intent extractor
