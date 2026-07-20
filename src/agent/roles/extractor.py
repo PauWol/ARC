@@ -5,32 +5,34 @@ from src.agent.types import BaseRole
 from src.constants import EXTRACTOR_INPUT_TOKEN_THRESHOLD
 
 EXTRACT_PROMPT = """
-ROLE: intent extractor
+ROLE: Memory extractor
 
 TASK: 
-Extract the user's task intent and goals.
-Identify what the user wants to achieve and break it into structured intent.
+Extract the current agent state from the conversation.
+Produce a compact working memory that can be updated over time.
 
 RULES:
-- intent max 12 words
-- goals max 5 items
-- each goal max 6 words
-- be concise
-- no explanations
-- no extra text outside JSON
-- Never invent intent or goals
-- Facts only
+- Be concise.
+- Preserve important technical details.
+- Never invent information.
+- Ignore greetings, filler, repetition, and conversational noise.
+- Exclude completed or obsolete tasks unless they remain relevant.
+- Output valid JSON only.
+- No explanations or markdown.
 """
 
 
 @dataclass(slots=True)
-class ExtractedTask:
+class ExtractedMemory:
     intent: str = ""
     goals: list[str] = field(default_factory=list[str])
+    constrains: list[str] = field(default_factory=list[str])
+    previous_decisions: list[str] = field(default_factory=list[str])
+    facts: list[str] = field(default_factory=list[str])
 
 
-class TaskExtractor(BaseRole[ExtractedTask]):
-    output_schema = ExtractedTask
+class Extractor(BaseRole[ExtractedMemory]):
+    output_schema = ExtractedMemory
     system_prompt: str = EXTRACT_PROMPT
 
     def __init__(
@@ -38,12 +40,11 @@ class TaskExtractor(BaseRole[ExtractedTask]):
     ) -> None:
         super().__init__(runtime, tokens, temperature)
 
-    @staticmethod
-    def estimate_tokens(text: str) -> int:
-        return len(text) // 4
+    def token_count(self, text: str) -> int:
+        return self.runtime.count_tokens(text)
 
     async def run(self, query: str):
-        if self.estimate_tokens(query) < int(EXTRACTOR_INPUT_TOKEN_THRESHOLD):  # pyright: ignore[reportArgumentType]
-            return ExtractedTask(intent=query)
+        if self.token_count(query) < int(EXTRACTOR_INPUT_TOKEN_THRESHOLD):
+            return ExtractedMemory(intent=query)
 
         return await super().run(query)

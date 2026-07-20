@@ -181,3 +181,6 @@ class ToolPromptGenerator:
     def from_functions(cls, functions: list[Callable[..., Any]]):
         """Helper to instantiate the Generator directly from a function list."""
         return cls(functions)
+
+
+# TODO: Add aks question tool etc combined with permission questions

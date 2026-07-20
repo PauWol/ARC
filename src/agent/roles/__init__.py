@@ -1,4 +1,4 @@
-from src.agent.roles.extractor import ExtractedTask, TaskExtractor
+from src.agent.roles.extractor import ExtractedMemory, Extractor
 from src.agent.roles.validator import (
     ValidationResult,
     Validator,
@@ -12,6 +12,6 @@ __all__ = [
     "Validator",
     "build_validator_prompt",
     "ValidationResult",
-    "ExtractedTask",
-    "TaskExtractor",
+    "ExtractedMemory",
+    "Extractor",
 ]

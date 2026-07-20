@@ -396,7 +396,7 @@ class LlamaRuntime:
         set self.source.family to override auto-detection.
         """
         if self._profile is None:
-            from src.profiles import detect_profile
+            from src.agent.profiles import detect_profile
 
             self._profile = detect_profile(self.source, override=self.source.family)
         return self._profile

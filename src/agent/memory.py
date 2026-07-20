@@ -7,67 +7,64 @@ from typing import Any, Literal
 import uuid
 
 from src.agent.events import EventBus
+from src.agent.roles import ExtractedMemory, Extractor
+from src.agent.roles.compressor import CompressedMemory, Compressor
 from src.agent.schema import Artifact
 
-STATE_VALUES = {
-    "new",
-    "planned",
-    "working",
-    "present",
-    "done",
-    "replan",
-    "error",
-}
-_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
-_INLINE_CODE_RE = re.compile(r"`[^`\n]{3,}`")
-_URL_RE = re.compile(r"https?://[^\s'\"<>()\[\]]+|www\.[^\s'\"<>()\[\]]+", re.I)
-_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:\\[\w\\.\-/]+)"
-    r"|(?:/[\w.\-/]+(?:\.\w+)?)"
-    r"|(?:\.{1,2}/[\w.\-/]+(?:\.\w+)?)",
-)
+
 _WHITESPACE_RE = re.compile(r"\s+")
+_REPEAT_LINE_RE = re.compile(r"^(.*?)(?:\n\1)+$", re.MULTILINE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def normalize_text(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-def strip_context_noise(text: str) -> str:
-    text = _CODE_BLOCK_RE.sub(" ", text)
-    text = _INLINE_CODE_RE.sub(" ", text)
-    text = _URL_RE.sub(" ", text)
-    text = _PATH_RE.sub(" ", text)
-    return normalize_text(text)
-
-
-def extract_context_items(text: str) -> list[str]:
-    items: list[str] = []
+def _dedupe_lines(text: str) -> str:
     seen: set[str] = set()
+    out: list[str] = []
 
-    def add(tag: str, value: str) -> None:
-        value = normalize_text(value)
-        if not value:
-            return
-        key = f"{tag}:{value.lower()}"
+    for line in text.splitlines():
+        line = normalize_text(line)
+        if not line:
+            continue
+        key = line.lower()
         if key in seen:
-            return
+            continue
         seen.add(key)
-        items.append(f"{tag}: {value}")
+        out.append(line)
 
-    for m in _CODE_BLOCK_RE.finditer(text):
-        add("code", m.group().strip("`"))
+    return "\n".join(out)
 
-    for m in _INLINE_CODE_RE.finditer(text):
-        add("code", m.group().strip("`"))
 
-    for m in _URL_RE.finditer(text):
-        add("url", m.group())
+def _dedupe_sentences(text: str) -> str:
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    seen: set[str] = set()
+    out: list[str] = []
 
-    for m in _PATH_RE.finditer(text):
-        add("path", m.group())
+    for part in parts:
+        part = normalize_text(part)
+        if not part:
+            continue
+        key = part.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(part)
 
-    return items
+    return " ".join(out)
+
+
+def extract_user_query(text: str) -> str:
+    """
+    Return a cleaned user query:
+    - removes repeated lines/sentences
+    - normalizes whitespace
+    """
+    text = _dedupe_lines(text)
+    text = _dedupe_sentences(text)
+    return normalize_text(text)
 
 
 @dataclass(slots=True)
@@ -102,14 +99,6 @@ class AgentState:
     status: str = "new"
     error: str | None = None
 
-    @classmethod
-    def from_user_input(cls, text: str) -> "AgentState":
-        return cls(
-            raw_input=text,
-            cleaned_input=strip_context_noise(text),
-            context_items=extract_context_items(text),
-        )
-
     def remember(self, key: str, value: Any) -> None:
         self.working_memory[key] = value
 
@@ -127,14 +116,6 @@ class AgentState:
 
     def remember_result(self, value: str):
         self.working_memory["results"].append(value)
-
-    def set_status(self, new_status: str) -> None:
-        if new_status not in STATE_VALUES:
-            raise ValueError(
-                f"Transition to state {new_status} not valid. State not supported!"
-            )
-
-        self.status = new_status
 
     def forget(self, key: str) -> None:
         self.working_memory.pop(key, None)
@@ -222,10 +203,6 @@ class AgentState:
         )
 
 
-def build_initial_state(query: str) -> AgentState:
-    return AgentState.from_user_input(query)
-
-
 @dataclass
 class Session:
     query: str
@@ -233,8 +210,7 @@ class Session:
     event_bus: EventBus
     step_index: int
 
-    intent: str
-    goals: list[str]
+    memory: ExtractedMemory
 
     start_time: float
     state: Literal[
@@ -249,14 +225,53 @@ class Session:
 
     artifacts: list
 
-    def __init__(self, query: str) -> None:
-        self.query = query
-        self.id = uuid.uuid4().hex
-        self.event_bus = EventBus()
-        self.step_index = 0
-        self.state = "new"
-        self.start_time = time.time()
+    extractor: Extractor
+
+    @classmethod
+    async def new(cls, query: str, extractor: Extractor) -> "Session":
+        query = extract_user_query(query)
+        memory = await extractor.run(query)
+
+        return cls(
+            query=query,
+            id=uuid.uuid4().hex,
+            event_bus=EventBus(),
+            step_index=0,
+            memory=memory,
+            start_time=time.time(),
+            state="new",
+            artifacts=[],
+            extractor=extractor,
+        )
+
+    @property
+    def is_done(self):
+        return self.state == "done"
 
 
-    def _parse_query():
-        
+@dataclass
+class WorkingMemory:
+    compressor: Compressor
+    _mem: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "facts": [],
+            "results": [],
+            "errors": [],
+            "temp": [],
+        }
+    )
+
+    _token_count: int = 0
+
+    def __init__(self, compressor: Compressor) -> None:
+        self.compressor = compressor
+
+    def _accumulate_tokens(self, text: object):
+        self._token_count += self.compressor.token(text)
+
+    def compress(self):
+        pass
+
+    @property
+    def token(self):
+        return self._token_count

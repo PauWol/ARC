@@ -3,15 +3,16 @@ import difflib
 from pathlib import Path
 import time
 from typing import Callable
-import uuid
 import logging
+
+from sympy.interactive import session
 
 from src.agent.llama_runtime import LlamaRuntime
 
-from src.agent.memory import Session, build_initial_state, AgentState
+from src.agent.memory import Session
 from src.agent.roles import (
-    TaskExtractor,
-    ExtractedTask,
+    Extractor,
+    ExtractedMemory,
     Planner,
     Plan,
     Validator,
@@ -51,45 +52,6 @@ from src.agent.events import (
 logger = logging.getLogger("agent")
 
 
-class ReasoningHook:
-    """
-    Bridges BaseRole's reasoning stream to the Agent's event bus so a UI can
-    render "thinking..." live. One instance per role; reads run_id/state off
-    the Agent at call time since those change every run() but the role
-    instances (and therefore their hooks) are constructed once in __init__.
-    """
-
-    def __init__(self, agent: "Agent", role: str) -> None:
-        self._agent = agent
-        self._role = role
-
-    def start(self) -> None:
-        emit_reasoning_started(
-            self._agent.event_bus,
-            run_id=self._agent._current_run_id,
-            state=self._agent.state,
-            role=self._role,
-        )
-
-    def chunk(self, text: str) -> None:
-        emit_reasoning_chunk(
-            self._agent.event_bus,
-            run_id=self._agent._current_run_id,
-            state=self._agent.state,
-            role=self._role,
-            chunk=text,
-        )
-
-    def finish(self, full_text: str) -> None:
-        emit_reasoning_finished(
-            self._agent.event_bus,
-            run_id=self._agent._current_run_id,
-            state=self._agent.state,
-            role=self._role,
-            reasoning=full_text,
-        )
-
-
 @dataclass(slots=True)
 class AgentConfig:
     model: ModelSource
@@ -123,7 +85,7 @@ class Agent(LlamaRuntime):
         self.event_bus: EventBus = EventBus()
 
         self._config.tools = make_builtin_tools(self, self._config.sandbox_policy)
-        self._extractor = TaskExtractor(self)
+        self._extractor = Extractor(self)
         self._planner = Planner(
             self,
             config.tools,
@@ -131,12 +93,7 @@ class Agent(LlamaRuntime):
         )
         self._validator = Validator(self)
         self._synth = Synthesizer(self)
-        # Note: self.state/self._current_run_id aren't set until run() starts;
-        # ReasoningHook reads them lazily at call time so construction order
-        # here doesn't matter. To get the same live "thinking..." visibility
-        # for extractor/validator/synth, add a `reasoning_hook` param to
-        # their constructors the same way Planner does and pass
-        # ReasoningHook(self, "<role>") here.
+        self._session: Session | None = None
 
         if len(config.tools) != 0:
             logger.debug(f"Following Tools are used: {config.tools}")
@@ -175,16 +132,16 @@ class Agent(LlamaRuntime):
         return close[0] if close else None
 
     def _stop_condition(self) -> bool:
-        if self.state.is_done:
+        if not session:
+            return False
+
+        if self.session.is_done:
             return True
 
-        if self.state.step_index >= self._config.max_iterations:
+        if self.session.step_index >= self._config.max_iterations:
             return True
 
         return False
-
-    async def _extract_intent_goals(self, query: str) -> ExtractedTask:
-        return await self._extractor.run(query)
 
     async def plan(self, query: str):
         return await self._planner.run(query)
@@ -194,18 +151,6 @@ class Agent(LlamaRuntime):
 
     async def synth(self, query: str):
         return await self._synth.run(query)
-
-    def build_context(self):
-        """
-        Build the LLM context and the tool shortlist.
-        Returns:
-            full_context, base_context, tools, artifacts
-        """
-        st = self.state
-
-        base = st.compact_prompt()  # pyright: ignore[reportArgumentType]
-
-        return base
 
     def _save_get_tool(self, plan: Plan):
         """
@@ -303,90 +248,71 @@ class Agent(LlamaRuntime):
             pass
 
     async def run(self, query: str):
-        self.session = Session()
+        self.session = await Session.new(query, self._extractor)
 
-        try:
-            # extract intent and goals
-            i_g = await self._extract_intent_goals(query)
-            self.state = build_initial_state(query)
-            self.state.intent = i_g.intent
-            self.state.goals = i_g.goals
+        while not self._stop_condition():
+            # ---------- Phase -----------
 
-            while not self._stop_condition():
-                # ---------- Phase -----------
+            # 1. build context of that exe round
+            context = self.build_context()
 
-                # 1. build context of that exe round
-                context = self.build_context()
+            _plan = await self.plan(context)
+            self.state.remember_fact(
+                f"plan:{_plan.tool}({_plan.input}) | {_plan.reason}"
+            )
 
-                _plan = await self.plan(context)
-                self.state.remember_fact(
-                    f"plan:{_plan.tool}({_plan.input}) | {_plan.reason}"
-                )
+            self.state.set_status("planned")
 
-                self.state.set_status("planned")
+            if "finish" in str(_plan.tool).lower():
+                self.state.set_status("done")
+                final_output = await self._synth_helper(run_id)
+                return self.state
 
-                if "finish" in str(_plan.tool).lower():
-                    self.state.set_status("done")
-                    final_output = await self._synth_helper(run_id)
-                    return self.state
+            t1 = time.time()
 
-                t1 = time.time()
+            result = await self.act(_plan)
 
-                result = await self.act(_plan)
+            t2 = time.time()
 
-                t2 = time.time()
+            validation = await self.validate(
+                build_validator_prompt(self.state, result, _plan)
+            )
+            self.state.remember_fact(
+                f"validation:{validation.status} | {validation.reason} | {validation.missing}"
+            )
 
-                validation = await self.validate(
-                    build_validator_prompt(self.state, result, _plan)
-                )
-                self.state.remember_fact(
-                    f"validation:{validation.status} | {validation.reason} | {validation.missing}"
-                )
+            if validation.status == "done":
+                self.state.set_status("present")
+                final_output = await self._synth_helper(run_id)
+                self.state.set_status("done")
 
-                if validation.status == "done":
-                    self.state.set_status("present")
-                    final_output = await self._synth_helper(run_id)
-                    self.state.set_status("done")
+                if self.state.artifacts:
+                    for a in self.state.artifacts:
+                        if not a.path:
+                            continue
 
-                    if self.state.artifacts:
-                        for a in self.state.artifacts:
-                            if not a.path:
-                                continue
+                        _path = Path(a.path)
 
-                            _path = Path(a.path)
+                        if _path.exists():
+                            continue
 
-                            if _path.exists():
-                                continue
+                        if a.content:
+                            _path.write_text(a.content, "utf-8")
 
-                            if a.content:
-                                _path.write_text(a.content, "utf-8")
+            elif validation.status == "present":
+                self.state.set_status("present")
+                await self._synth_helper(run_id)
+                self.state.advance("presented what was done till now")
+                self.state.set_status("working")
 
-                elif validation.status == "present":
-                    self.state.set_status("present")
-                    await self._synth_helper(run_id)
-                    self.state.advance("presented what was done till now")
-                    self.state.set_status("working")
+            elif validation.status == "replan":
+                self.state.advance("Need replanning old approach failed")
+                self.state.set_status("replan")
+                if validation.missing:
+                    self.state.open_questions = list(validation.missing)
 
-                elif validation.status == "replan":
-                    self.state.advance("Need replanning old approach failed")
-                    self.state.set_status("replan")
-                    if validation.missing:
-                        self.state.open_questions = list(validation.missing)
+            else:
+                self.state.advance()
+                self.state.set_status("working")
 
-                else:
-                    self.state.advance()
-                    self.state.set_status("working")
-
-            return self.state
-
-        except Exception as exc:
-            if getattr(self, "state", None) is not None:
-                self.state.error = f"{type(exc).__name__}: {exc}"
-                self.state.set_status("error")
-            raise
-
-
-# TODO: State transitions and updates need to be checked and updated
-# TODO: Synthesized answer needs to event handled -> update events
-# TODO: Tool permission confirmation prompt / hook
-# TODO: Proper Artifact handling
+        return self.session

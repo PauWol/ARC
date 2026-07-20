@@ -12,8 +12,8 @@ from typing import (
 )
 from dataclasses import fields
 from typing import cast
-from src.llama_runtime import LlamaRuntime
-from src.profiles import ModelProfile
+from src.agent.llama_runtime import LlamaRuntime
+from src.agent.profiles import ModelProfile
 from src.assets import json_grammar
 from src.tools import ToolPromptGenerator
 
@@ -168,7 +168,7 @@ class BaseRole(Generic[T]):
         """.strip()
         return p
 
-    def build_reasoning_prompt(self,optional_append: str = ""):
+    def build_reasoning_prompt(self, optional_append: str = ""):
         base = self.system_prompt.strip()
         tool_block = self._tool_gen.build_prompt()
 
@@ -183,6 +183,7 @@ class BaseRole(Generic[T]):
         {REASON_PROMPT_SUFFIX}
         """.strip()
         return p
+
     def parse_content(self, content: str) -> T:
         data = json.loads(content)
         schema_cls = cast(type, self.output_schema)
@@ -200,7 +201,7 @@ class BaseRole(Generic[T]):
         """
         try:
             return self.parse_content(content)
-        except (json.JSONDecodeError, TypeError, KeyError):
+        except json.JSONDecodeError, TypeError, KeyError:
             return self._partial(content)
 
     @property
@@ -386,7 +387,9 @@ class BaseRole(Generic[T]):
         )
         return resp["choices"][0]["message"]["content"]
 
-    async def _repair(self, query: str, profile: ModelProfile, bad_output: str, error: str) -> str:
+    async def _repair(
+        self, query: str, profile: ModelProfile, bad_output: str, error: str
+    ) -> str:
         """One extra grammar-constrained call showing the model its own
         invalid output plus the parse error, asking it to fix just the
         JSON. Only used when parse_content_safe's local fallback chain
@@ -488,7 +491,9 @@ class BaseRole(Generic[T]):
             )
         system = self.build_system_prompt(append)
         messages = self._chat_messages(profile, system, query)
-        cfg = profile.default_sampling.merge(max_tokens=self.tokens, temperature=self.temp, top_p=0.1)
+        cfg = profile.default_sampling.merge(
+            max_tokens=self.tokens, temperature=self.temp, top_p=0.1
+        )
 
         buffer = ""
         async for chunk in self.runtime.astream_chat(
