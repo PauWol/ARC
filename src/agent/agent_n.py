@@ -1,23 +1,20 @@
 from dataclasses import dataclass, field
 import difflib
 from pathlib import Path
-import time
 from typing import Callable
 import logging
-
-from sympy.interactive import session
 
 from src.agent.llama_runtime import LlamaRuntime
 
 from src.agent.memory import Session
 from src.agent.roles import (
     Extractor,
-    ExtractedMemory,
     Planner,
     Plan,
+    ValidationResult,
     Validator,
     build_validator_prompt,
-    synthesizer,
+    Synthesizer,
 )
 from src.agent.schema import ToolResult
 from src.tools.utils import tool_result_validator
@@ -26,28 +23,7 @@ from src.agent.llama_runtime import ModelSource, RuntimeOptions
 from src.agent.policy import SandboxPolicy
 from src.tools.builtin import make_builtin_tools
 
-from src.agent.events import (
-    EventBus,
-    emit_agent_done,
-    emit_agent_error,
-    emit_agent_started,
-    emit_action_finished,
-    emit_action_planned,
-    emit_action_started,
-    emit_context_built,
-    emit_intent_extracted,
-    emit_state_updated,
-    emit_step_started,
-    emit_synthesis_finished,
-    emit_synthesis_started,
-    emit_thinking_started,
-    emit_tool_error,
-    emit_validation_finished,
-    emit_validation_started,
-    emit_reasoning_started,
-    emit_reasoning_chunk,
-    emit_reasoning_finished,
-)
+from src.agent.events import EventBus
 
 logger = logging.getLogger("agent")
 
@@ -89,7 +65,6 @@ class Agent(LlamaRuntime):
         self._planner = Planner(
             self,
             config.tools,
-            reasoning_hook=ReasoningHook(self, "planner"),  # pyright: ignore[reportCallIssue]
         )
         self._validator = Validator(self)
         self._synth = Synthesizer(self)
@@ -132,7 +107,7 @@ class Agent(LlamaRuntime):
         return close[0] if close else None
 
     def _stop_condition(self) -> bool:
-        if not session:
+        if not self.session:
             return False
 
         if self.session.is_done:
@@ -243,9 +218,37 @@ class Agent(LlamaRuntime):
         )
         return synth_output
 
-    def _phase(self):
-        if self.state.status == "done":
-            pass
+    async def validator(self, validation_result: ValidationResult):
+        if validation_result.status == "done":
+            self.session.set_state.present
+            # TODO Insert actual present method
+            self.session.set_state.done
+
+            if self.session.artifacts:
+                for a in self.session.artifacts:
+                    if not a.path:
+                        continue
+
+                    _path = Path(a.path)
+
+                    if _path.exists():
+                        continue
+
+                    if a.content:
+                        _path.write_text(a.content, "utf-8")
+
+        elif validation_result.status == "present":
+            self.session.set_state.present
+            # TODO Insert actual present method
+            self.session.set_state.working
+
+        elif validation_result.status == "replan":
+            self.session.set_state.replan
+            if validation_result.missing:
+                # TODO: Insert missing working memory
+                pass
+        else:
+            self.session.set_state.working
 
     async def run(self, query: str):
         self.session = await Session.new(query, self._extractor)
@@ -261,18 +264,9 @@ class Agent(LlamaRuntime):
                 f"plan:{_plan.tool}({_plan.input}) | {_plan.reason}"
             )
 
-            self.state.set_status("planned")
-
-            if "finish" in str(_plan.tool).lower():
-                self.state.set_status("done")
-                final_output = await self._synth_helper(run_id)
-                return self.state
-
-            t1 = time.time()
+            self.session.set_state.planned
 
             result = await self.act(_plan)
-
-            t2 = time.time()
 
             validation = await self.validate(
                 build_validator_prompt(self.state, result, _plan)
@@ -280,39 +274,5 @@ class Agent(LlamaRuntime):
             self.state.remember_fact(
                 f"validation:{validation.status} | {validation.reason} | {validation.missing}"
             )
-
-            if validation.status == "done":
-                self.state.set_status("present")
-                final_output = await self._synth_helper(run_id)
-                self.state.set_status("done")
-
-                if self.state.artifacts:
-                    for a in self.state.artifacts:
-                        if not a.path:
-                            continue
-
-                        _path = Path(a.path)
-
-                        if _path.exists():
-                            continue
-
-                        if a.content:
-                            _path.write_text(a.content, "utf-8")
-
-            elif validation.status == "present":
-                self.state.set_status("present")
-                await self._synth_helper(run_id)
-                self.state.advance("presented what was done till now")
-                self.state.set_status("working")
-
-            elif validation.status == "replan":
-                self.state.advance("Need replanning old approach failed")
-                self.state.set_status("replan")
-                if validation.missing:
-                    self.state.open_questions = list(validation.missing)
-
-            else:
-                self.state.advance()
-                self.state.set_status("working")
 
         return self.session

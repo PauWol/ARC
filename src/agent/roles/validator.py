@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from typing import Optional
 from typing import Literal
 
-from src.llama_runtime import LlamaRuntime
-from src.memory import AgentState
-from src.types import BaseRole
-from src.schema import ToolResult
-from src.roles.planner import Plan
+from src.agent.llama_runtime import LlamaRuntime
+from src.agent.memory import AgentState
+from src.agent.types import BaseRole
+from src.agent.schema import ToolResult
+from src.agent.roles.planner import Plan
 
 
 VALIDATE_PROMPT = """

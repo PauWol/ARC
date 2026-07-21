@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 import re
 from dataclasses import dataclass, field
 import time
@@ -203,6 +204,49 @@ class AgentState:
         )
 
 
+class SessionState(StrEnum):
+    NEW = "new"
+    PLANNED = "planned"
+    WORKING = "working"
+    PRESENT = "present"
+    DONE = "done"
+    REPLAN = "replan"
+    ERROR = "error"
+
+
+class StateSetter:
+    def __init__(self, session: "Session") -> None:
+        self._session = session
+
+    @property
+    def new(self) -> None:
+        self._session.state = SessionState.NEW
+
+    @property
+    def planned(self) -> None:
+        self._session.state = SessionState.PLANNED
+
+    @property
+    def working(self) -> None:
+        self._session.state = SessionState.WORKING
+
+    @property
+    def present(self) -> None:
+        self._session.state = SessionState.PRESENT
+
+    @property
+    def done(self) -> None:
+        self._session.state = SessionState.DONE
+
+    @property
+    def replan(self) -> None:
+        self._session.state = SessionState.REPLAN
+
+    @property
+    def error(self) -> None:
+        self._session.state = SessionState.ERROR
+
+
 @dataclass
 class Session:
     query: str
@@ -210,19 +254,10 @@ class Session:
     event_bus: EventBus
     step_index: int
 
-    memory: ExtractedMemory
+    initial_memory: ExtractedMemory
 
     start_time: float
-    state: Literal[
-        "new",
-        "planned",
-        "working",
-        "present",
-        "done",
-        "replan",
-        "error",
-    ]
-
+    state: SessionState
     artifacts: list
 
     extractor: Extractor
@@ -237,9 +272,9 @@ class Session:
             id=uuid.uuid4().hex,
             event_bus=EventBus(),
             step_index=0,
-            memory=memory,
+            initial_memory=memory,
             start_time=time.time(),
-            state="new",
+            state=SessionState.NEW,
             artifacts=[],
             extractor=extractor,
         )
@@ -247,6 +282,10 @@ class Session:
     @property
     def is_done(self):
         return self.state == "done"
+
+    @property
+    def set_state(self) -> StateSetter:
+        return StateSetter(self)
 
 
 @dataclass

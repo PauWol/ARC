@@ -62,6 +62,7 @@ class Artifact:
 @dataclass(slots=True)
 class ToolResult:
     success: bool
+    time: float
     summary: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     artifacts: list[Artifact] = field(default_factory=list)

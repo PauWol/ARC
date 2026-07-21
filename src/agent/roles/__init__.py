@@ -5,6 +5,7 @@ from src.agent.roles.validator import (
     build_validator_prompt,
 )
 from src.agent.roles.planner import Planner, Plan
+from src.agent.roles.synthesizer import Synthesizer
 
 __all__ = [
     "Planner",
@@ -14,4 +15,5 @@ __all__ = [
     "ValidationResult",
     "ExtractedMemory",
     "Extractor",
+    "Synthesizer",
 ]
