@@ -305,11 +305,21 @@ class WorkingMemory:
     def __init__(self, compressor: Compressor) -> None:
         self.compressor = compressor
 
+    def __str__(self) -> str:
+        return "\n".join(
+            f"{key}: {', '.join(values) if values else '[]'}"
+            for key, values in self._mem.items()
+        )
+
     def _accumulate_tokens(self, text: object):
         self._token_count += self.compressor.token(text)
 
-    def compress(self):
-        pass
+    async def compress(self):
+        _mem = (await self.compressor.run(str(self))).working_memory
+
+        self._token_count = 0
+        self._accumulate_tokens(_mem)
+        self._mem = _mem
 
     @property
     def token(self):

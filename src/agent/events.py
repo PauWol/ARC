@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import time
-import traceback
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import Any, Callable, Generic, TypeVar
 
-from src.agent.memory import AgentState
+from src.agent.memory import AgentState, Session, WorkingMemory
 from src.agent.roles import ValidationResult
 from src.agent.schema import ToolResult
 
@@ -16,9 +15,8 @@ class EventType(Enum):
     AGENT_STARTED = auto()
     INTENT_EXTRACTED = auto()
     STEP_STARTED = auto()
-    CONTEXT_BUILT = auto()
     THINKING_STARTED = auto()
-    ACTION_PLANNED = auto()
+    THINKING_FINISHED = auto()
     ACTION_STARTED = auto()
     ACTION_FINISHED = auto()
     VALIDATION_STARTED = auto()
@@ -28,126 +26,171 @@ class EventType(Enum):
     STATE_UPDATED = auto()
     AGENT_DONE = auto()
     AGENT_ERROR = auto()
-    TOOL_ERROR = auto()
-    WARNING = auto()
     REASONING_STARTED = auto()
     REASONING_CHUNK = auto()
     REASONING_FINISHED = auto()
 
 
+@dataclass(slots=True, frozen=True)
+class AgentStarted:
+    run_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class IntentExtracted:
+    intent: str
+
+
+@dataclass(slots=True, frozen=True)
+class StepStarted:
+    step: int
+    description: str
+
+
+@dataclass(slots=True, frozen=True)
+class ThinkingStarted:
+    pass
+
+
+@dataclass(slots=True, frozen=True)
+class ThinkingFinished:
+    tool: str
+    reason: str
+    input: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class ActionStarted:
+    step: int
+    tool: str
+
+
+@dataclass(slots=True, frozen=True)
+class ActionFinished:
+    step: int
+    result: ToolResult
+    duration_ms: float
+
+
+@dataclass(slots=True, frozen=True)
+class ValidationStarted:
+    validation: ValidationResult
+
+
+@dataclass(slots=True, frozen=True)
+class ValidationFinished:
+    validation: ValidationResult
+
+
+@dataclass(slots=True, frozen=True)
+class AgentDone:
+    answer: str
+
+
+@dataclass(slots=True, frozen=True)
+class AgentError:
+    error: str
+
+
+EVENT_TYPES: dict[type, EventType] = {
+    AgentStarted: EventType.AGENT_STARTED,
+    IntentExtracted: EventType.INTENT_EXTRACTED,
+    StepStarted: EventType.STEP_STARTED,
+    ThinkingStarted: EventType.THINKING_STARTED,
+    ThinkingFinished: EventType.THINKING_FINISHED,
+    ActionStarted: EventType.ACTION_STARTED,
+    ActionFinished: EventType.ACTION_FINISHED,
+    ValidationFinished: EventType.VALIDATION_FINISHED,
+    AgentDone: EventType.AGENT_DONE,
+    AgentError: EventType.AGENT_ERROR,
+}
+
+P = TypeVar("P")
+
+
 @dataclass(slots=True)
-class Event:
-    type: EventType
-    payload: dict[str, Any] = field(default_factory=dict)
+class Event(Generic[P]):
+    payload: P
+
+    run_id: str
+
+    type: EventType = field(init=False)
+
     ts: float = field(default_factory=time.time)
-    run_id: str = ""
-    step: int | None = None
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
     source: str = "agent"
-    duration_ms: float | None = None
-    error: str | None = None
+
+    def __post_init__(self):
+        self.type = EVENT_TYPES[type(self.payload)]
+
+
+Listener = Callable[[Event], None]
 
 
 class EventBus:
-    def __init__(self) -> None:
-        self._listeners: list[Callable[[Event], None]] = []
-        self._history: list[Event] = []
-        self._max_history = 500
+    def __init__(self):
+        self._listeners: list[Listener] = []
 
-    def subscribe(self, fn: Callable[[Event], None]) -> None:
-        if fn not in self._listeners:
-            self._listeners.append(fn)
+    def subscribe(self, listener: Listener):
+        self._listeners.append(listener)
 
-    def unsubscribe(self, fn: Callable[[Event], None]) -> None:
-        self._listeners = [
-            listener for listener in self._listeners if listener is not fn
-        ]
+    def unsubscribe(self, listener: Listener):
+        self._listeners.remove(listener)
 
-    def emit(self, event: Event) -> None:
-        self._history.append(event)
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
-
-        for fn in tuple(self._listeners):
-            try:
-                fn(event)
-            except Exception as exc:
-                self._history.append(
-                    Event(
-                        type=EventType.WARNING,
-                        payload={
-                            "listener": getattr(fn, "__name__", str(fn)),
-                            "message": "listener raised while handling event",
-                        },
-                        source="event_bus",
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                )
-
-    def history(self) -> list[Event]:
-        return list(self._history)
-
-
-def _ensure_state(kwargs: dict[str, Any]) -> AgentState:
-    state = kwargs.get("state")
-    if not isinstance(state, AgentState):
-        raise ValueError("Missing or invalid 'state' kwarg; expected AgentState.")
-    return state
-
-
-def _ensure_run_id(kwargs: dict[str, Any]) -> str:
-    run_id = kwargs.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        raise ValueError("Missing or invalid 'run_id' kwarg.")
-    return run_id
-
-
-def _duration_ms(start: Any) -> float:
-    if not isinstance(start, (float, int)):
-        raise ValueError(f"Expected numeric start time, got {type(start).__name__}.")
-    return (time.time() - float(start)) * 1000.0
-
-
-def _validate_tool_result(result: Any) -> ToolResult:
-    if not isinstance(result, ToolResult):
-        raise ValueError("Kwarg 'result' must be a ToolResult instance.")
-    return result
-
-
-def _validate_validation_result(result: Any) -> ValidationResult:
-    if not isinstance(result, ValidationResult):
-        raise ValueError("Kwarg 'validation' must be a ValidationResult instance.")
-    return result
-
-
-def emit_event(
-    event_bus: EventBus,
-    event_type: EventType,
-    *,
-    run_id: str,
-    step: int | None = None,
-    payload: dict[str, Any] | None = None,
-    duration_ms: float | None = None,
-    error: str | None = None,
-    source: str = "agent",
-) -> None:
-    event_bus.emit(
-        Event(
-            type=event_type,
-            payload=payload or {},
-            run_id=run_id,
-            step=step,
-            duration_ms=duration_ms,
-            error=error,
-            source=source,
-        )
-    )
+    def emit(self, event: Event):
+        for listener in tuple(self._listeners):
+            listener(event)
 
 
 class EventEmitter(EventBus):
-    def __init__(self, id: str) -> None:
-        super().__init__()
-        self.id = id
+    def __init__(self, run_id: str):
+        self._session_id = run_id
+
+    def emit_(self, payload: P) -> None:
+        self.emit(
+            Event(
+                payload=payload,
+                run_id=self._session_id,
+            )
+        )
+
+    @classmethod
+    def with_agent_started(cls, session_id: str):
+        _cls = cls(session_id)
+        _cls.agent_started()
+        return _cls
+
+    # Convenience wrappers
 
     def agent_started(self):
-        ev = Event(EventType.AGENT_STARTED)
+        self.emit_(AgentStarted(run_id=self._session_id))
+
+    def thinking_started(self):
+        self.emit_(ThinkingStarted())
+
+    def thinking_finished(self, tool: str, reason: str, input: dict[str, Any]):
+        self.emit_(ThinkingFinished(tool, reason, input))
+
+    def step_started(self, step: int, description: str):
+        self.emit_(StepStarted(step, description))
+
+    def action_started(self, step: int, tool: str):
+        self.emit_(ActionStarted(step, tool))
+
+    def action_finished(
+        self,
+        step: int,
+        result: ToolResult,
+        duration_ms: float,
+    ):
+        self.emit_(ActionFinished(step, result, duration_ms))
+
+    def validation_finished(self, validation: ValidationResult):
+        self.emit_(ValidationFinished(validation))
+
+    def done(self, answer: str):
+        self.emit_(AgentDone(answer))
+
+    def error(self, error: str):
+        self.emit_(AgentError(error))

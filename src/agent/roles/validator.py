@@ -3,8 +3,11 @@ from dataclasses import dataclass
 from typing import Optional
 from typing import Literal
 
+from sympy.polys.polyconfig import query
+
 from src.agent.llama_runtime import LlamaRuntime
 from src.agent.memory import AgentState
+from src.agent.roles import build_validator_prompt
 from src.agent.types import BaseRole
 from src.agent.schema import ToolResult
 from src.agent.roles.planner import Plan
@@ -50,45 +53,49 @@ class Validator(BaseRole[ValidationResult]):
     ) -> None:
         super().__init__(runtime, tokens, temperature)
 
+    async def run(self, query: str) -> T:
+        query = self.build_validator_prompt()
 
-def build_validator_prompt(state: AgentState, result: ToolResult, plan: Plan) -> str:
-    artifact_block = (
-        [
-            {
-                "type": a.type,
-                "name": a.name,
-                "description": a.description,
-                "tags": a.tags[:4] if a.tags else [],
-                "path": a.path,
-            }
-            for a in result.artifacts
-        ]
-        if result.artifacts
-        else "No artifacts returned"
-    )
+        return await super().run(query)
 
-    return f"""
-GOAL:
-{state.intent or state.cleaned_input or state.raw_input}
+    def build_validator_prompt(result: ToolResult, plan: Plan) -> str:
+        artifact_block = (
+            [
+                {
+                    "type": a.type,
+                    "name": a.name,
+                    "description": a.description,
+                    "tags": a.tags[:4] if a.tags else [],
+                    "path": a.path,
+                }
+                for a in result.artifacts
+            ]
+            if result.artifacts
+            else "No artifacts returned"
+        )
 
-STATE:
-status: {state.status}
-step_index: {state.step_index}
-error: {state.error or ""}
+        return f"""
+    GOAL:
+    {state.intent or state.cleaned_input or state.raw_input}
 
-CONTEXT:
-{state.compact_prompt()}
+    STATE:
+    status: {state.status}
+    step_index: {state.step_index}
+    error: {state.error or ""}
 
-LAST_ACTION:
-tool: {plan.tool}
-reason: {plan.reason}
-input: {json.dumps(plan.input, ensure_ascii=False, separators=(",", ":"))}
+    CONTEXT:
+    {state.compact_prompt()}
 
-LAST_RESULT:
-success: {str(result.success).lower()}
-summary: {result.summary}
-data: {json.dumps(result.data, ensure_ascii=False, separators=(",", ":"))}
+    LAST_ACTION:
+    tool: {plan.tool}
+    reason: {plan.reason}
+    input: {json.dumps(plan.input, ensure_ascii=False, separators=(",", ":"))}
 
-RESULT_ARTIFACTS:
-{json.dumps(artifact_block, ensure_ascii=False, indent=2)}
-"""
+    LAST_RESULT:
+    success: {str(result.success).lower()}
+    summary: {result.summary}
+    data: {json.dumps(result.data, ensure_ascii=False, separators=(",", ":"))}
+
+    RESULT_ARTIFACTS:
+    {json.dumps(artifact_block, ensure_ascii=False, indent=2)}
+    """

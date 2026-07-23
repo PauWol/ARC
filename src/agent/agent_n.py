@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import difflib
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 import logging
 
 from src.agent.llama_runtime import LlamaRuntime
@@ -23,7 +23,7 @@ from src.agent.llama_runtime import ModelSource, RuntimeOptions
 from src.agent.policy import SandboxPolicy
 from src.tools.builtin import make_builtin_tools
 
-from src.agent.events import EventBus
+from src.agent.events import EventEmitter
 
 logger = logging.getLogger("agent")
 
@@ -58,8 +58,6 @@ class Agent(LlamaRuntime):
     ):
         super().__init__(config.model, config.runtime)
         self._config = config
-        self.event_bus: EventBus = EventBus()
-
         self._config.tools = make_builtin_tools(self, self._config.sandbox_policy)
         self._extractor = Extractor(self)
         self._planner = Planner(
@@ -69,6 +67,7 @@ class Agent(LlamaRuntime):
         self._validator = Validator(self)
         self._synth = Synthesizer(self)
         self._session: Session | None = None
+        self.event: EventEmitter
 
         if len(config.tools) != 0:
             logger.debug(f"Following Tools are used: {config.tools}")
@@ -119,106 +118,15 @@ class Agent(LlamaRuntime):
         return False
 
     async def plan(self, query: str):
-        return await self._planner.run(query)
+        self.event.thinking_started()
+        _plan = await self._planner.run(query)
+        self.event.thinking_finished(_plan.tool, _plan.reason, _plan.input)
+        self.session.set_state.planned
+        return _plan
 
     async def validate(self, query: str):
-        return await self._validator.run(query)
+        validation_result = await self._validator.run(query)
 
-    async def synth(self, query: str):
-        return await self._synth.run(query)
-
-    def _save_get_tool(self, plan: Plan):
-        """
-        Get the tool and its input from Plan.
-        Register Error with correction hint when tool not found directly.
-
-        :returns: The Tool (Callable) and its input (dict) and the raw tool name
-        """
-        _raw_name = str(plan.tool).lower().strip()
-
-        _tool_map = self._tool_map
-        if not _tool_map or not _raw_name in _tool_map:
-            _res_name = self._resolve_tool_name(_raw_name)
-            self.state.remember_error(
-                f"unknown_tool:{_raw_name} -> might be {_res_name}"
-            )
-            return None, {}, _raw_name
-
-        _tool_inp = plan.input if isinstance(plan.input, dict) else {}
-        _tool = _tool_map.get(_raw_name)
-
-        return _tool, _tool_inp, _raw_name
-
-    async def act(self, plan: Plan) -> ToolResult:
-        """Execute the plan step produced by the planner."""
-        _tool, _tool_inp, _raw_tool_name = self._save_get_tool(plan)
-
-        if _tool is None:
-            emit_tool_error(
-                self.event_bus,
-                run_id=self._current_run_id,
-                state=self.state,
-                tool_name=_raw_tool_name,
-                exc=ValueError(f"unknown tool: {_raw_tool_name}"),
-            )  # type: ignore[attr-defined]
-            return ToolResult(success=False, summary=f"unknown tool: {_raw_tool_name}")
-
-        try:
-            result = await _tool(**_tool_inp)
-            tool_result_validator(result, _raw_tool_name)
-        except Exception as exc:
-            self.state.remember_error(
-                f"tool_failed:{_raw_tool_name} | {type(exc).__name__}: {exc}"
-            )
-            emit_tool_error(
-                self.event_bus,
-                run_id=self._current_run_id,  # type: ignore[attr-defined]
-                state=self.state,
-                tool_name=_raw_tool_name,
-                exc=exc,
-            )
-            return ToolResult(
-                success=False,
-                summary=f"tool {_raw_tool_name} raised {type(exc).__name__}: {exc}",
-            )
-
-        self.state.remember_fact(f"tool_success:{_raw_tool_name} | {_tool_inp}")
-
-        if getattr(result, "summary", None) and getattr(result, "data", None):
-            self.state.remember_result(
-                f"tool_result:{_raw_tool_name} | {result.summary} | {result.data}"
-            )
-        elif getattr(result, "summary", None):
-            self.state.remember_result(
-                f"tool_result:{_raw_tool_name} | {result.summary}"
-            )
-
-        arts = list(getattr(result, "artifacts", []) or [])
-        if arts:
-            self.state.extend_artifacts(arts)
-            self.state.remember(
-                f"artifacts_{self.state.step_index}",
-                [a.name for a in arts],
-            )
-
-        return result
-
-    async def _synth_helper(self, run_id: str) -> str:
-        emit_synthesis_started(self.event_bus, run_id=run_id, state=self.state)
-        synth_output = await self.synth(self.state.compact_prompt())
-        synth_output = (
-            f"{synth_output.response} | References: {synth_output.references}"
-        )
-        self.state.remember_fact(f"synthesized_output | step={self.state.step_index}")
-        emit_synthesis_finished(
-            self.event_bus,
-            run_id=run_id,
-            state=self.state,
-            output=synth_output,
-        )
-        return synth_output
-
-    async def validator(self, validation_result: ValidationResult):
         if validation_result.status == "done":
             self.session.set_state.present
             # TODO Insert actual present method
@@ -250,29 +158,24 @@ class Agent(LlamaRuntime):
         else:
             self.session.set_state.working
 
+    async def synth(self, query: str):
+        return await self._synth.run(query)
+
+    async def act(self, plan: Plan) -> ToolResult:
+        """Execute the plan step produced by the planner."""
+
+        pass
+
+    async def present(self):
+        pass
+
     async def run(self, query: str):
         self.session = await Session.new(query, self._extractor)
+        self.event = EventEmitter.with_agent_started(self.session.id)
 
         while not self._stop_condition():
-            # ---------- Phase -----------
-
-            # 1. build context of that exe round
-            context = self.build_context()
-
-            _plan = await self.plan(context)
-            self.state.remember_fact(
-                f"plan:{_plan.tool}({_plan.input}) | {_plan.reason}"
-            )
-
-            self.session.set_state.planned
-
+            _plan = await self.plan(query)
             result = await self.act(_plan)
-
-            validation = await self.validate(
-                build_validator_prompt(self.state, result, _plan)
-            )
-            self.state.remember_fact(
-                f"validation:{validation.status} | {validation.reason} | {validation.missing}"
-            )
+            validation = await self.validate(_plan, result)
 
         return self.session

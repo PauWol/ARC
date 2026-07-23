@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from src.llama_runtime import LlamaRuntime
-from src.types import BaseRole, ReasoningMode, ReasoningSink
+from src.agent.llama_runtime import LlamaRuntime
+from src.agent.types import BaseRole, ReasoningMode, ReasoningSink
 from src.tools import ToolPromptGenerator
 
 PLANNER_PROMPT = """
@@ -83,7 +83,7 @@ class Planner(BaseRole[Plan]):
             optional_append + self.system_prompt_addition
         )
 
-    def _validate(self, plan: Plan) -> str | None:
+    def _validate(self, plan: Plan) -> str | None:  # pyright: ignore[reportIncompatibleMethodOverride]
         tool = str(plan.tool).strip().lower()
 
         if not tool:

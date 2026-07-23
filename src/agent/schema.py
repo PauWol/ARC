@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from src.agent.memory import Session, WorkingMemory
+
 
 # TODO: Make name and system prompt of config actually do something
 
@@ -101,3 +103,10 @@ class SubAgentResult:
 
     description: str = ""
     artifacts: list[Artifact] | None = None
+
+
+@dataclass(slots=True)
+class AgentResult:
+    artifacts: list[Artifact]
+    session: Session
+    working_memory: WorkingMemory

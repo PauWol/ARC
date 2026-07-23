@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from src.agent.llama_runtime import LlamaRuntime
 from src.agent.types import BaseRole
 
@@ -14,7 +14,14 @@ Output only the compressed memory.
 
 @dataclass(slots=True)
 class CompressedMemory:
-    working_memory: dict
+    working_memory: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "facts": [],
+            "results": [],
+            "errors": [],
+            "temp": [],
+        }
+    )
 
 
 class Compressor(BaseRole[CompressedMemory]):
